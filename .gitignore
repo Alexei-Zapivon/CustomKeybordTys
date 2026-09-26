@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.log
+# Бинарники Interception не храним в репозитории — скачиваются с GitHub (см. README)
+lib/
