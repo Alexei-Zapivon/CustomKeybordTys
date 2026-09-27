@@ -21,8 +21,8 @@ from typing import Callable
 from .actions import Output
 from .config import DeviceMatch, Profile
 from .engine import Engine, Router, Worker
-from .interception import KEYBOARDS, Interception, is_keyboard
-from .keys import IGNORED_INPUT, KEY_UP, name_from_stroke
+from .interception import KEYBOARDS, Interception, Stroke, is_keyboard
+from .keys import IGNORED_INPUT, KEY_E0, KEY_UP, name_from_stroke
 
 log = logging.getLogger("minikeys")
 
@@ -41,7 +41,9 @@ def acquire_single_instance() -> object | None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = ctypes.c_void_p
     handle = kernel32.CreateMutexW(None, False, "Local\\minikeys-remapper")
-    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+    # 183 ERROR_ALREADY_EXISTS; 5 ERROR_ACCESS_DENIED: мьютекс создан экземпляром,
+    # запущенным от администратора, а мы запущены без прав. В обоих случаях копия уже работает.
+    if not handle or ctypes.get_last_error() in (183, 5):
         return None
     return handle
 
@@ -94,6 +96,10 @@ class RemapService:
         self._applied: frozenset[int] = frozenset()
         self._next_scan = 0.0
         self._pressed: set[tuple[int, str]] = set()   # для отсева автоповтора в уведомлениях
+        self._keyboards: frozenset[int] = frozenset()  # все подключённые клавиатуры
+        self._out = None
+        # драйвер трогают два потока: этот (приём) и поток действий (отправка через драйвер)
+        self._io_lock = threading.Lock()
 
     # --- управление (можно вызывать из любого потока) ---------------------------
     def start(self) -> None:
@@ -107,7 +113,8 @@ class RemapService:
         if self._output_factory is None:
             from .winput import WinOutput
             self._output_factory = WinOutput
-        self._worker = Worker(self._output_factory())
+        self._out = self._output_factory()
+        self._worker = Worker(self._out)
         self._engine = Engine(self._profile, self._worker.submit)
         self._router = Router(self._engine)
 
@@ -187,11 +194,12 @@ class RemapService:
         dev = ic.wait(WAIT_MS)
         if not dev:
             return
-        stroke = ic.receive(dev)
+        with self._io_lock:
+            stroke = ic.receive(dev)
         if stroke is None:
             return
         if dev not in self._applied or not is_keyboard(dev):
-            ic.send(dev, stroke)
+            self._forward(dev, stroke)
             return
         code, state = stroke.key.code, stroke.key.state
         name = name_from_stroke(code, state)
@@ -204,7 +212,7 @@ class RemapService:
         notable = first_down and name not in IGNORED_INPUT
 
         if self._mode is Mode.PROBE:
-            ic.send(dev, stroke)
+            self._forward(dev, stroke)
             if notable:
                 self._listener.on_probe(dev, self._targets.get(dev) or ic.hardware_ids(dev), name)
         elif self._mode is Mode.LEARN:
@@ -212,12 +220,42 @@ class RemapService:
                 self._listener.on_learned(name)
         else:
             if self._router.route(dev, code, state):
-                ic.send(dev, stroke)
+                self._forward(dev, stroke)
             if name not in IGNORED_INPUT and (first_down or not is_down):
                 self._listener.on_key(name, is_down)
 
+    def _forward(self, dev: int, stroke) -> None:
+        with self._io_lock:
+            self._ic.send(dev, stroke)
+
+    # --- отправка нажатий через драйвер (режим output = "driver") --------------------
+    def _output_device(self) -> int | None:
+        """Через какую клавиатуру слать: лучше через ту, что мы НЕ перехватываем."""
+        free = sorted(self._keyboards - self._applied)
+        if free:
+            return free[0]
+        return min(self._targets) if self._targets else None
+
+    def driver_send(self, code: int, prefix: int, up: bool) -> bool:
+        """Нажатие «от имени» настоящей клавиатуры. Вызывается из потока действий."""
+        dev = self._output_device()
+        if dev is None or self._ic is None:
+            return False
+        stroke = Stroke()
+        stroke.key.code = code
+        stroke.key.state = (KEY_UP if up else 0) | (prefix & KEY_E0)
+        self._forward(dev, stroke)
+        return True
+
+    def _configure_output(self, profile: Profile) -> None:
+        configure = getattr(self._out, "configure", None)
+        if configure is not None:
+            configure(press_ms=profile.press_ms, method=profile.output,
+                      driver_send=self.driver_send if profile.output == "driver" else None)
+
     def _rescan(self) -> None:
         devices = self._ic.devices(KEYBOARDS)
+        self._keyboards = frozenset(devices)
         targets = {d: ids for d, ids in devices.items() if self._profile.device.matches(d, ids)}
         if targets.keys() != self._targets.keys():
             for dev in sorted(targets.keys() - self._targets.keys()):
@@ -249,6 +287,7 @@ class RemapService:
         device_changed = profile.device != self._profile.device
         self._profile = profile
         self._engine.set_profile(profile)
+        self._configure_output(profile)
         if device_changed:
             self._engine.release_all()
             self._next_scan = 0.0  # сразу перепроверить устройства

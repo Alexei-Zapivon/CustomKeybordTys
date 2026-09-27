@@ -189,6 +189,43 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.actions(), [("down", "lctrl"), ("up", "lctrl")])
 
 
+class DriverOutputTest(unittest.TestCase):
+    def setUp(self):
+        self.ic = FakeInterception()
+        self.out = FakeOutput()
+        self.configured = {}
+        self.out.configure = lambda **kw: self.configured.update(kw)
+        self.svc = RemapService(RecordingListener(), interception_factory=lambda dll: self.ic,
+                                output_factory=lambda: self.out)
+        self.svc._open()
+
+    def tearDown(self):
+        self.svc._shutdown()
+
+    def test_profile_settings_reach_output(self):
+        self.svc.set_profile(parse_profile({"device": {"match": "VID_1189&PID_8840"},
+                                            "settings": {"press_ms": 50, "output": "driver"}}))
+        self.svc.tick()
+        self.assertEqual(self.configured["press_ms"], 50)
+        self.assertEqual(self.configured["method"], "driver")
+        self.assertEqual(self.configured["driver_send"], self.svc.driver_send)
+
+    def test_driver_send_uses_keyboard_we_do_not_capture(self):
+        self.svc.set_profile(profile())
+        self.svc.tick()
+        self.assertTrue(self.svc.driver_send(0x64, 0, False))
+        self.assertTrue(self.svc.driver_send(0x4D, keys.KEY_E0, True))
+        # через основную клавиатуру №1, а не через перехваченную №4
+        self.assertEqual(self.ic.sent, [(MAIN, 0x64, 0), (MAIN, 0x4D, keys.KEY_E0 | keys.KEY_UP)])
+
+    def test_driver_send_without_free_keyboard(self):
+        del self.ic.devices_now[MAIN]
+        self.svc.set_profile(profile())
+        self.svc.tick()
+        self.assertTrue(self.svc.driver_send(0x64, 0, False))
+        self.assertEqual(self.ic.sent, [(MINI, 0x64, 0)])
+
+
 class TwoIdenticalKeyboardsTest(unittest.TestCase):
     """Вторая такая же мини-клавиатура (те же VID/PID) подключена как устройство №5."""
     MINI2 = 5

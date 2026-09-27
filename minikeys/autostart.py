@@ -15,7 +15,6 @@ pythonw.exe MiniKeys.pyw при запуске из исходников, с ф�
 
 from __future__ import annotations
 
-import ctypes
 import os
 import subprocess
 import sys
@@ -47,12 +46,8 @@ def command_line() -> str:
 
 
 def is_admin() -> bool:
-    if sys.platform != "win32":
-        return False
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except OSError:
-        return False
+    from .elevation import is_admin as _is_admin
+    return _is_admin()
 
 
 # --- реестр (HKCU\...\Run) ---------------------------------------------------------

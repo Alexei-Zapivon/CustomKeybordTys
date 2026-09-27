@@ -119,6 +119,15 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_profile({"device": {}, "binds": {}})
 
+    def test_output_settings(self):
+        p = parse_profile({"device": {"match": "X"}, "settings": {"press_ms": 50, "output": "driver"}})
+        self.assertEqual((p.press_ms, p.output), (50, "driver"))
+        p = parse_profile({"device": {"match": "X"}})
+        self.assertEqual((p.press_ms, p.output), (30, "sendinput"))
+        for bad in ({"press_ms": -1}, {"press_ms": 501}, {"press_ms": True}, {"output": "magic"}):
+            with self.assertRaises(ConfigError, msg=bad):
+                parse_profile({"device": {"match": "X"}, "settings": bad})
+
     def test_device_match(self):
         dev = DeviceMatch(match=["vid_1189&pid_8890"], exclude=["MI_02"])
         self.assertTrue(dev.matches(3, ["HID\\VID_1189&PID_8890&REV_0100&MI_00"]))

@@ -107,6 +107,7 @@ class HotkeyEdit(QWidget):
 ACTION_TYPES = [
     ("none", "Нет действия"),
     ("hotkey", "Сочетание клавиш"),
+    ("freekey", "Discord / свободная клавиша (F13-F24)"),
     ("media", "Мультимедиа (звук, треки)"),
     ("run", "Запуск программы / файла / сайта"),
     ("text", "Ввод текста"),
@@ -119,6 +120,8 @@ ACTION_TYPES = [
 def classify(spec: Any) -> str:
     if spec is None:
         return "none"
+    if bindtext.free_key_of(spec):
+        return "freekey"
     if isinstance(spec, str):
         spec = {"hotkey": spec}
     if "hotkey" in spec:
@@ -140,8 +143,21 @@ def _hint(text: str) -> QLabel:
     return label
 
 
+DISCORD_HELP = (
+    "Кнопка мини-клавиатуры будет нажимать клавишу {key}. На обычной клавиатуре её нет, "
+    "поэтому она ни с чем не конфликтует.\n\n"
+    "Как назначить в Discord:\n"
+    "1. Сохраните этот бинд.\n"
+    "2. Discord → Настройки пользователя → Горячие клавиши → «Добавить горячую клавишу».\n"
+    "3. Действие: «Вкл./выкл. микрофон» (или «Режим рации», тогда включите удержание ниже).\n"
+    "4. Щёлкните поле «Сочетание клавиш» и нажмите эту кнопку на мини-клавиатуре.\n"
+    "Discord запишет {key}. Так же клавиши F13-F24 назначаются в OBS, играх и других программах."
+)
+
+
 class ActionEditor(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None,
+                 used_free_keys: frozenset[str] = frozenset()) -> None:
         super().__init__(parent)
         self.kind = QComboBox()
         for kind, title in ACTION_TYPES:
@@ -226,6 +242,27 @@ class ActionEditor(QWidget):
         lay.addStretch()
         self.pages.addWidget(page)
 
+        # Discord / свободная клавиша F13-F24 (НОВОЕ в 1.2)
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        form = QFormLayout()
+        self.free_key = QComboBox()
+        for key in bindtext.FREE_KEYS:
+            self.free_key.addItem(key.upper() + ("   (уже занята)" if key in used_free_keys else ""), key)
+        first_free = next((k for k in bindtext.FREE_KEYS if k not in used_free_keys), "f13")
+        self.free_key.setCurrentIndex(bindtext.FREE_KEYS.index(first_free))
+        form.addRow("Клавиша:", self.free_key)
+        lay.addLayout(form)
+        self.free_hold = QCheckBox("Удерживать, пока кнопка зажата (для режима рации / Push-to-talk)")
+        lay.addWidget(self.free_hold)
+        self.free_help = _hint("")
+        self.free_help.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.free_help)
+        lay.addStretch()
+        self.free_key.currentIndexChanged.connect(self._update_free_help)
+        self._update_free_help()
+        self.pages.insertWidget([k for k, _ in ACTION_TYPES].index("freekey"), page)
+
         self.kind.currentIndexChanged.connect(self.pages.setCurrentIndex)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -233,6 +270,9 @@ class ActionEditor(QWidget):
         form.addRow("Действие:", self.kind)
         lay.addLayout(form)
         lay.addWidget(self.pages, 1)
+
+    def _update_free_help(self) -> None:
+        self.free_help.setText(DISCORD_HELP.format(key=self.free_key.currentData().upper()))
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Выберите программу или файл", "",
@@ -247,7 +287,11 @@ class ActionEditor(QWidget):
             return
         if isinstance(spec, str):
             spec = {"hotkey": spec}
-        if kind == "hotkey":
+        if kind == "freekey":
+            key = bindtext.free_key_of(spec)
+            self.free_key.setCurrentIndex(bindtext.FREE_KEYS.index(key))
+            self.free_hold.setChecked("remap" in spec)
+        elif kind == "hotkey":
             self.hotkey.setText(spec["hotkey"])
             self.hotkey_repeat.setChecked(bool(spec.get("repeat")))
         elif kind == "media":
@@ -271,9 +315,12 @@ class ActionEditor(QWidget):
         kind = self.kind.currentData()
         if kind == "none":
             return None
-        if kind == "hotkey":
+        if kind == "freekey":
+            key = self.free_key.currentData()
+            spec: Any = {"remap": key} if self.free_hold.isChecked() else key
+        elif kind == "hotkey":
             chord = self.hotkey.text()
-            spec: Any = {"hotkey": chord, "repeat": True} if self.hotkey_repeat.isChecked() else chord
+            spec = {"hotkey": chord, "repeat": True} if self.hotkey_repeat.isChecked() else chord
         elif kind == "media":
             key = self.media.currentData()
             repeat = next(r for _, k, r in bindtext.MEDIA if k == key)
@@ -309,13 +356,14 @@ def _buttons(dialog: QDialog, ok_text: str = "Сохранить") -> QDialogBut
 
 
 class KeyDialog(QDialog):
-    def __init__(self, key: str, spec: Any, caption: str, parent: QWidget | None = None) -> None:
+    def __init__(self, key: str, spec: Any, caption: str, parent: QWidget | None = None,
+                 used_free_keys: frozenset[str] = frozenset()) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Кнопка «{bindtext.pretty_key(key)}»")
         self.setMinimumWidth(520)
         self.caption = QLineEdit(caption)
         self.caption.setPlaceholderText(bindtext.pretty_key(key))
-        self.editor = ActionEditor()
+        self.editor = ActionEditor(used_free_keys=used_free_keys)
         self.editor.set_spec(spec)
         lay = QVBoxLayout(self)
         form = QFormLayout()
@@ -338,7 +386,8 @@ PART_TITLES = {"left": "⟲ Поворот влево", "right": "⟳ Повор
 
 
 class EncoderDialog(QDialog):
-    def __init__(self, enc: dict, binds: dict, part: str, parent: QWidget | None = None) -> None:
+    def __init__(self, enc: dict, binds: dict, part: str, parent: QWidget | None = None,
+                 used_free_keys: frozenset[str] = frozenset()) -> None:
         super().__init__(parent)
         self.setWindowTitle(enc.get("name") or "Крутилка")
         self.setMinimumWidth(540)
@@ -354,7 +403,7 @@ class EncoderDialog(QDialog):
                 self.tabs.addTab(page, PART_TITLES[p])
                 self.tabs.setTabEnabled(self.tabs.count() - 1, False)
                 continue
-            editor = ActionEditor()
+            editor = ActionEditor(used_free_keys=used_free_keys)
             editor.set_spec(binds.get(key))
             page = QWidget()
             lay = QVBoxLayout(page)

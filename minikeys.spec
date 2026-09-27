@@ -64,7 +64,11 @@ exe = EXE(  # noqa: F821
     icon=str(ROOT / "assets" / "minikeys.ico"),
     version=str(version_file),
     console=False,    # windowed: без чёрного окна консоли, только окно и значок в трее
-    uac_admin=False,  # права администратора: через автозапуск из Планировщика (см. README)
+    # Манифест requireAdministrator (то же, что ключ --uac-admin): Windows спрашивает UAC при
+    # каждом ручном запуске exe. Нужно, чтобы нажатия доходили до программ, запущенных от
+    # администратора. Автозапуск при этом идёт через Планировщик заданий без окна UAC
+    # (галочка «Запускать вместе с Windows»): из реестра Windows такие программы не запускает.
+    uac_admin=True,
     upx=False,        # UPX-сжатие чаще вызывает ложные срабатывания антивирусов
     debug=False,
     strip=False,

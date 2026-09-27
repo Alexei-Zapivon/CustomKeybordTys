@@ -55,6 +55,8 @@ class Profile:
     binds: dict[str, Binding]
     unmapped: str = "block"   # "block" — глушить неназначенные клавиши, "pass" — пропускать
     log_keys: bool = False
+    press_ms: int = 30        # сколько держать нажатую клавишу при отправке сочетания
+    output: str = "sendinput"  # "sendinput" (скан-коды) или "driver" (через Interception)
     path: Path | None = None
 
 
@@ -231,13 +233,19 @@ def parse_profile(data: dict) -> Profile:
     settings = data.get("settings", {})
     if not isinstance(settings, dict):
         raise ConfigError("[settings] должна быть таблицей")
-    _check_keys(settings, {"unmapped", "log_keys"}, "[settings]")
+    _check_keys(settings, {"unmapped", "log_keys", "press_ms", "output"}, "[settings]")
     unmapped = settings.get("unmapped", "block")
     if unmapped not in ("block", "pass"):
         raise ConfigError('[settings].unmapped: "block" или "pass"')
     log_keys = settings.get("log_keys", False)
     if not isinstance(log_keys, bool):
         raise ConfigError("[settings].log_keys: true или false")
+    press_ms = settings.get("press_ms", 30)
+    if not isinstance(press_ms, int) or isinstance(press_ms, bool) or not 0 <= press_ms <= 500:
+        raise ConfigError("[settings].press_ms: миллисекунды от 0 до 500")
+    output = settings.get("output", "sendinput")
+    if output not in ("sendinput", "driver"):
+        raise ConfigError('[settings].output: "sendinput" или "driver"')
 
     raw_binds = data.get("binds", {})
     if not isinstance(raw_binds, dict):
@@ -254,4 +262,5 @@ def parse_profile(data: dict) -> Profile:
         if canon in binds:
             raise ConfigError(f"{where}: клавиша {canon!r} уже назначена ({binds[canon].source})")
         binds[canon] = parse_binding(spec, where)
-    return Profile(device=device, binds=binds, unmapped=unmapped, log_keys=log_keys)
+    return Profile(device=device, binds=binds, unmapped=unmapped, log_keys=log_keys,
+                   press_ms=press_ms, output=output)

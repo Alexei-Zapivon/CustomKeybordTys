@@ -27,6 +27,27 @@ MEDIA = [
     ("Без звука (Mute)", "volume_mute", False),
 ]
 MEDIA_KEYS = {key: title for title, key, _ in MEDIA}
+# Клавиши F13-F24: на обычной клавиатуре их нет, поэтому они идеальны для горячих
+# клавиш в Discord, OBS, играх: не мешают набору текста и ни с чем не конфликтуют.
+FREE_KEYS = [f"f{i}" for i in range(13, 25)]
+
+
+def free_key_of(spec: Any) -> str | None:
+    """Если бинд — одиночная клавиша F13-F24 (нажатие или удержание), вернуть её."""
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        spec = {"hotkey": spec}
+    for kind in ("hotkey", "remap"):
+        if kind in spec and not spec.get("repeat"):
+            try:
+                parsed = keys.parse_chord(spec[kind])
+            except keys.KeyNameError:
+                return None
+            return parsed[0] if len(parsed) == 1 and parsed[0] in FREE_KEYS else None
+    return None
+
+
 # короткие подписи для кнопок на поле
 MEDIA_SHORT = {
     "media_play_pause": "Play / Pause", "media_next": "След. трек", "media_prev": "Пред. трек",

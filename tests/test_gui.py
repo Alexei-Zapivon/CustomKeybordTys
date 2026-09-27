@@ -121,6 +121,33 @@ class GuiTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ed.spec()
 
+    def test_discord_free_key_preset(self):
+        from minikeys.gui.dialogs import ActionEditor, KeyDialog
+        ed = ActionEditor(used_free_keys=frozenset({"f13", "f14"}))
+        ed.kind.setCurrentIndex(ed.kind.findData("freekey"))
+        self.assertEqual(ed.spec(), "f15")                   # первая свободная
+        self.assertIn("F15", ed.free_help.text())
+        ed.free_hold.setChecked(True)
+        self.assertEqual(ed.spec(), {"remap": "f15"})        # режим рации
+        for spec in ("f13", {"remap": "f20"}):
+            ed.set_spec(spec)
+            self.assertEqual(ed.kind.currentData(), "freekey")
+            self.assertEqual(ed.spec(), spec)
+        # окно кнопки: F13 уже занята другой кнопкой профиля
+        store.set_bind(self.doc, "b", "f13")
+        dlg = KeyDialog("a", None, "", self.win, used_free_keys=self.win._used_free_keys({"a"}))
+        dlg.editor.kind.setCurrentIndex(dlg.editor.kind.findData("freekey"))
+        self.assertEqual(dlg.editor.free_key.currentData(), "f14")
+        self.shot(dlg, "discord_preset.png")
+
+    def test_output_settings_menu(self):
+        self.win._set_app("press_ms", 50)
+        self.win._set_app("output", "driver")
+        self.pump()
+        self.assertEqual((self.service._profile.press_ms, self.service._profile.output), (50, "driver"))
+        saved = store.load_root(self.path, import_legacy=False)["app"]
+        self.assertEqual((saved["press_ms"], saved["output"]), (50, "driver"))
+
     def test_encoder_wizard_and_dialog(self):
         from minikeys.gui.dialogs import EncoderDialog, EncoderWizard
         wiz = EncoderWizard(self.win)
@@ -240,7 +267,7 @@ class MainEntryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "profile.json"
             QTimer.singleShot(700, QApplication.quit)
-            code = gui_app.main(["--config", str(path)], service_factory=factory)
+            code = gui_app.main(["--config", str(path), "--no-elevate"], service_factory=factory)
             self.assertEqual(code, 0)
             self.assertTrue(path.exists())            # профиль создан при первом запуске
             self.assertIn("profiles", store.load_root(path, import_legacy=False))

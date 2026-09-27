@@ -2,7 +2,7 @@ import sys
 import unittest
 import xml.etree.ElementTree as ET
 
-from minikeys import autostart, paths
+from minikeys import autostart, elevation, paths
 
 NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
@@ -25,9 +25,19 @@ class AutostartTest(unittest.TestCase):
         self.assertEqual(root.find("t:Actions/t:Exec/t:Arguments", NS).text, "--autostart")
         self.assertEqual(root.find("t:Triggers/t:LogonTrigger/t:UserId", NS).text, "PC\\Пользователь & Co")
 
+    def test_elevation_command(self):
+        exe, params = elevation.elevation_command(["--minimized", "--elevated"])
+        self.assertEqual(exe, paths.launch_command()[0])
+        self.assertTrue(params.endswith("--minimized --elevated"))
+        self.assertEqual(params.count("--elevated"), 1)       # без повторов
+        if not paths.FROZEN:
+            self.assertIn("MiniKeys.pyw", params)
+
     @unittest.skipIf(sys.platform == "win32", "проверка для не-Windows")
     def test_noop_outside_windows(self):
         self.assertIsNone(autostart.status())
+        self.assertFalse(elevation.is_admin())
+        self.assertFalse(elevation.relaunch_as_admin([]))
         with self.assertRaises(autostart.AutostartError):
             autostart.enable()
 

@@ -4,7 +4,10 @@
 {
   "version": 2,
   "active": "Default",                         # профиль, который работает сейчас
-  "app": {"start_minimized": false},           # настройки самой программы
+  "app": {"start_minimized": false,            # настройки самой программы
+          "elevate": true,                     # просить права администратора при запуске
+          "press_ms": 30,                      # удержание клавиши при отправке, мс
+          "output": "sendinput"},              # "sendinput" или "driver"
   "profiles": {
     "Default": {
       "device":   {"match": "VID_1189&PID_8840"},          # + "device_number": 4 — только это устройство
@@ -97,8 +100,26 @@ def _import_toml(legacy: Path | None) -> dict:
 
 
 # --- корневой документ: несколько профилей + настройки программы ------------------
+APP_DEFAULTS = {"start_minimized": False, "elevate": True, "press_ms": 30, "output": "sendinput"}
+PRESS_MS_CHOICES = (10, 30, 50, 100)
+
+
+def normalize_app(app: dict) -> dict:
+    result = dict(APP_DEFAULTS)
+    if isinstance(app.get("start_minimized"), bool):
+        result["start_minimized"] = app["start_minimized"]
+    if isinstance(app.get("elevate"), bool):
+        result["elevate"] = app["elevate"]
+    press = app.get("press_ms")
+    if isinstance(press, int) and not isinstance(press, bool) and 0 <= press <= 500:
+        result["press_ms"] = press
+    if app.get("output") in ("sendinput", "driver"):
+        result["output"] = app["output"]
+    return result
+
+
 def new_root(profile: dict | None = None) -> dict:
-    return {"version": 2, "active": DEFAULT_PROFILE, "app": {"start_minimized": False},
+    return {"version": 2, "active": DEFAULT_PROFILE, "app": dict(APP_DEFAULTS),
             "profiles": {DEFAULT_PROFILE: profile or new_document()}}
 
 
@@ -109,9 +130,7 @@ def normalize_root(data: dict) -> dict:
     profiles = {str(name): normalize(p if isinstance(p, dict) else {}) for name, p in raw.items()}
     active = data.get("active") if data.get("active") in profiles else next(iter(profiles))
     app = data.get("app") if isinstance(data.get("app"), dict) else {}
-    return {"version": 2, "active": active,
-            "app": {"start_minimized": bool(app.get("start_minimized", False))},
-            "profiles": profiles}
+    return {"version": 2, "active": active, "app": normalize_app(app), "profiles": profiles}
 
 
 def load_root(path: Path | None = None, legacy: Path | None = None, *,
@@ -203,12 +222,18 @@ def device_configured(doc: dict) -> bool:
     return bool(dev.get("match")) or dev.get("device_number") is not None
 
 
-def build_profile(doc: dict) -> Profile | None:
-    """Profile для перехватчика или None, если устройство ещё не выбрано."""
+def build_profile(doc: dict, app: dict | None = None) -> Profile | None:
+    """Profile для перехватчика или None, если устройство ещё не выбрано.
+
+    app: настройки программы; press_ms и output из них действуют во всех профилях.
+    """
     if not device_configured(doc):
         return None
     data = copy.deepcopy(doc)
     data["device"] = {k: v for k, v in data["device"].items() if v not in ("", None, [])}
+    if app:
+        data["settings"]["press_ms"] = app.get("press_ms", APP_DEFAULTS["press_ms"])
+        data["settings"]["output"] = app.get("output", APP_DEFAULTS["output"])
     return parse_profile(data)
 
 

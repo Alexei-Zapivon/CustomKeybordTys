@@ -12,6 +12,12 @@
   * «Настройки» → «Запускать вместе с Windows» (autostart.py) и «Запускать свернутой»;
   * выбор «только это устройство» для нескольких одинаковых клавиатур (dialogs.DeviceDialog);
   * пути через paths.py, чтобы всё работало и в собранном minikeys.exe.
+
+Изменения версии 1.2:
+  * «Настройки» → «Запрашивать права администратора», «Отправка нажатий» (SendInput со
+    скан-кодами или через драйвер), «Длительность нажатия»;
+  * при запуске без прав программа перезапускает себя с запросом UAC (elevation.py);
+  * в окне кнопки действие «Discord / свободная клавиша (F13-F24)».
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, 
                                QMenu, QMessageBox, QSizePolicy, QSystemTrayIcon, QToolBar,
                                QToolButton, QVBoxLayout, QWidget)
 
-from .. import __version__, autostart, paths, store
+from .. import __version__, autostart, bindtext, elevation, paths, store
 from ..config import ConfigError
 from ..service import Mode, RemapService
 from . import theme
@@ -113,6 +119,11 @@ class MainWindow(QMainWindow):
         self._refresh_profiles()
         self._update_device_label()
 
+    def set_admin_warning(self) -> None:
+        """Программа работает без прав администратора (пользователь отказал в UAC)."""
+        self.statusBar().addPermanentWidget(QLabel(
+            f"<span style='color:{theme.WARN}'>без прав администратора</span>"))
+
     def set_service_error(self, error: str) -> None:
         self.service_ok = False
         self._set_status(theme.ERROR, f"Перехват не работает: {error}")
@@ -162,11 +173,40 @@ class MainWindow(QMainWindow):
         self.act_start_min.setToolTip("При запуске окно не показывается, программа сразу уходит в трей")
         self.act_start_min.toggled.connect(self._set_start_minimized)
 
+        # НОВОЕ 1.2: права администратора, способ отправки, длительность нажатия
+        app = self.root["app"]
+        self.act_elevate = QAction("Запрашивать права администратора при запуске", self)
+        self.act_elevate.setCheckable(True)
+        self.act_elevate.setChecked(app.get("elevate", True))
+        self.act_elevate.setToolTip("Нужно, чтобы нажатия доходили до программ, запущенных от администратора")
+        self.act_elevate.toggled.connect(lambda on: self._set_app("elevate", on))
+
+        output_menu = QMenu("Отправка нажатий", self)
+        group = QActionGroup(output_menu)
+        for value, title in (("sendinput", "Обычная (SendInput, скан-коды)"),
+                             ("driver", "Через драйвер, как настоящая клавиатура")):
+            act = output_menu.addAction(title)
+            act.setCheckable(True)
+            act.setChecked(app.get("output") == value)
+            act.triggered.connect(lambda _c=False, v=value: self._set_app("output", v))
+            group.addAction(act)
+        press_menu = QMenu("Длительность нажатия", self)
+        group = QActionGroup(press_menu)
+        for ms in store.PRESS_MS_CHOICES:
+            act = press_menu.addAction(f"{ms} мс" + (" (по умолчанию)" if ms == 30 else ""))
+            act.setCheckable(True)
+            act.setChecked(app.get("press_ms") == ms)
+            act.triggered.connect(lambda _c=False, v=ms: self._set_app("press_ms", v))
+            group.addAction(act)
+
         settings = QMenu(self)
         settings.addAction(self.act_block)
+        settings.addMenu(output_menu)
+        settings.addMenu(press_menu)
         settings.addSeparator()
         settings.addAction(self.act_autostart)
         settings.addAction(self.act_start_min)
+        settings.addAction(self.act_elevate)
         settings.addSeparator()
         settings.addAction("Открыть папку с профилями", self._open_profile_folder)
         settings_btn = QToolButton()
@@ -249,7 +289,7 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось сохранить", str(exc))
         try:
-            self.service.set_profile(store.build_profile(self.doc))
+            self.service.set_profile(store.build_profile(self.doc, self.root["app"]))
         except ConfigError as exc:
             QMessageBox.warning(self, "Ошибка в профиле", str(exc))
         self.board.refresh_texts()
@@ -259,7 +299,11 @@ class MainWindow(QMainWindow):
         self.save()
 
     def _set_start_minimized(self, on: bool) -> None:
-        self.root["app"]["start_minimized"] = on
+        self._set_app("start_minimized", on)
+
+    def _set_app(self, name: str, value) -> None:
+        """Настройка программы (root["app"]): сохранить и сразу применить."""
+        self.root["app"][name] = value
         self.save()
 
     def _set_autostart(self, on: bool) -> None:
@@ -476,9 +520,15 @@ class MainWindow(QMainWindow):
         self.edit_encoder(enc["id"], "left")
 
     # --- редактирование ----------------------------------------------------------
+    def _used_free_keys(self, exclude: set[str]) -> frozenset[str]:
+        """F13-F24, уже занятые другими кнопками профиля: мастер предложит свободную."""
+        return frozenset(k for key, spec in self.doc["binds"].items()
+                         if key not in exclude and (k := bindtext.free_key_of(spec)))
+
     def edit_key(self, key: str) -> None:
         layout = self.doc["layout"]["keys"].setdefault(key, {"x": 0, "y": 0})
-        dialog = KeyDialog(key, store.get_bind(self.doc, key), layout.get("label", ""), self)
+        dialog = KeyDialog(key, store.get_bind(self.doc, key), layout.get("label", ""), self,
+                           used_free_keys=self._used_free_keys({key}))
         if dialog.exec() != KeyDialog.Accepted:
             return
         caption = dialog.caption.text().strip()
@@ -493,7 +543,9 @@ class MainWindow(QMainWindow):
         enc = next((e for e in self.doc["layout"]["encoders"] if e["id"] == enc_id), None)
         if enc is None:
             return
-        dialog = EncoderDialog(enc, self.doc["binds"], part, self)
+        own = {enc.get(p) for p in ("left", "right", "press")}
+        dialog = EncoderDialog(enc, self.doc["binds"], part, self,
+                               used_free_keys=self._used_free_keys(own))
         if dialog.exec() != EncoderDialog.Accepted:
             return
         enc["name"] = dialog.name.text().strip() or enc.get("name", "")
@@ -569,6 +621,9 @@ def main(argv: list[str] | None = None, service_factory=None) -> int:
                         help="запуск из автозагрузки Windows (ставится автоматически)")
     parser.add_argument("--config", help="путь к profile.json (по умолчанию рядом с программой)")
     parser.add_argument("--dll", help="путь к interception.dll")
+    parser.add_argument(elevation.ELEVATED_FLAG, action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-elevate", action="store_true",
+                        help="не запрашивать права администратора при запуске")
     args, _unknown = parser.parse_known_args(argv)
 
     profile_path = Path(args.config) if args.config else store.default_path()
@@ -581,6 +636,21 @@ def main(argv: list[str] | None = None, service_factory=None) -> int:
     app.setWindowIcon(theme.app_icon())
     app.setQuitOnLastWindowClosed(False)  # закрытие окна = сворачивание в трей
 
+    try:
+        root = store.load_root(profile_path)
+    except ConfigError as exc:
+        QMessageBox.critical(None, "minikeys", f"Профиль повреждён:\n{exc}")
+        return 1
+
+    # НОВОЕ 1.2: без прав администратора перезапускаемся с запросом UAC. Делаем это ДО
+    # захвата мьютекса, чтобы повышенная копия могла его получить.
+    admin = elevation.is_admin()
+    if (sys.platform == "win32" and not admin and root["app"].get("elevate", True)
+            and not args.elevated and not args.no_elevate):
+        argv_all = sys.argv[1:] if argv is None else argv
+        if elevation.relaunch_as_admin(argv_all):
+            return 0  # дальше работает копия с правами администратора
+
     mutex = None
     if sys.platform == "win32":
         from ..service import acquire_single_instance
@@ -590,11 +660,6 @@ def main(argv: list[str] | None = None, service_factory=None) -> int:
                 QMessageBox.information(None, "minikeys", "minikeys уже запущена, ищите значок в трее.")
             return 0
 
-    try:
-        root = store.load_root(profile_path)
-    except ConfigError as exc:
-        QMessageBox.critical(None, "minikeys", f"Профиль повреждён:\n{exc}")
-        return 1
     if not profile_path.exists():
         store.save_root(root, profile_path)  # первый запуск: фиксируем перенос из config.toml
     try:
@@ -607,7 +672,7 @@ def main(argv: list[str] | None = None, service_factory=None) -> int:
     # окно подписывается на сигналы ДО запуска сервиса, чтобы первые события не потерялись
     window = MainWindow(service, bridge, root, profile_path)
     try:
-        service.set_profile(store.build_profile(store.active_profile(root)))
+        service.set_profile(store.build_profile(store.active_profile(root), root["app"]))
         service.start()
     except ConfigError as exc:
         window.set_service_error(f"ошибка в профиле: {exc}")
@@ -615,11 +680,14 @@ def main(argv: list[str] | None = None, service_factory=None) -> int:
         log.error("перехватчик не запущен: %s", exc)
         window.set_service_error(str(exc))
 
+    if sys.platform == "win32" and not admin:
+        window.set_admin_warning()
     minimized = args.minimized or root["app"].get("start_minimized", False)
     if not minimized or not QSystemTrayIcon.isSystemTrayAvailable():
         window.show()
-    log.info("minikeys %s запущена (%s), профиль: %s, файл: %s", __version__,
-             "exe" if paths.FROZEN else "исходники", root["active"], profile_path)
+    log.info("minikeys %s запущена (%s, %s), профиль: %s, файл: %s", __version__,
+             "exe" if paths.FROZEN else "исходники",
+             "администратор" if admin else "без прав администратора", root["active"], profile_path)
     code = app.exec()
     service.stop()
     del mutex

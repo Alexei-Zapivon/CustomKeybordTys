@@ -33,6 +33,25 @@ class BindTextTest(unittest.TestCase):
                 bindtext.text_to_macro(bad)
 
 
+class FreeKeyTest(unittest.TestCase):
+    def test_free_key_of(self):
+        self.assertEqual(bindtext.free_key_of("f13"), "f13")
+        self.assertEqual(bindtext.free_key_of({"remap": "F24"}), "f24")
+        self.assertIsNone(bindtext.free_key_of("ctrl+f13"))
+        self.assertIsNone(bindtext.free_key_of("f12"))
+        self.assertIsNone(bindtext.free_key_of({"hotkey": "f13", "repeat": True}))
+        self.assertIsNone(bindtext.free_key_of({"run": "x"}))
+
+    def test_app_settings_reach_profile(self):
+        root = store.new_root()
+        doc = store.active_profile(root)
+        doc["device"]["match"] = "VID_1189&PID_8840"
+        root["app"].update(press_ms=100, output="driver")
+        p = store.build_profile(doc, root["app"])
+        self.assertEqual((p.press_ms, p.output), (100, "driver"))
+        self.assertEqual(store.normalize_app({"press_ms": "x", "output": "?"}), store.APP_DEFAULTS)
+
+
 class StoreTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
