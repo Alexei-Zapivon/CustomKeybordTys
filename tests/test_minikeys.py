@@ -79,8 +79,8 @@ class ConfigTest(unittest.TestCase):
     def test_example_config_is_valid(self):
         p = load_profile(ROOT / "config.toml")
         self.assertEqual(p.binds["a"].on_press, Hotkey(["lctrl", "lshift", "m"]))
-        self.assertIsInstance(p.binds["q"].on_press, Launch)
-        self.assertTrue(p.binds["space"].is_hold)
+        self.assertIsInstance(p.binds["e"].on_press, Launch)
+        self.assertTrue(p.binds["2"].repeat)
 
     def test_forms(self):
         p = profile({
