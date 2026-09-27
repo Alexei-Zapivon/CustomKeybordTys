@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import logging
 import sys
 import time
@@ -17,7 +16,7 @@ log = logging.getLogger("minikeys")
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = ROOT / "config.toml"
-RESCAN_SECONDS = 2.0   # как часто искать переподключённую клавиатуру и изменения конфига
+RESCAN_SECONDS = 2.0   # как часто проверять изменения конфига
 WAIT_MS = 200
 
 
@@ -30,16 +29,6 @@ def _setup_logging(verbose: bool, log_file: str | None) -> None:
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S",
                         handlers=handlers or [logging.NullHandler()])
-
-
-def _single_instance() -> object | None:
-    """Именованный мьютекс: второй экземпляр не должен перехватывать ту же клавиатуру."""
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.restype = ctypes.c_void_p
-    handle = kernel32.CreateMutexW(None, False, "Local\\minikeys-remapper")
-    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
-        return None
-    return handle
 
 
 def _open_interception(dll: str | None):
@@ -144,9 +133,8 @@ class _ConfigWatcher:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    from .engine import Engine, Router, Worker
-    from .interception import KEYBOARDS, is_keyboard
-    from .winput import WinOutput
+    from .interception import InterceptionError
+    from .service import RemapService, acquire_single_instance
 
     try:
         profile = load_profile(args.config)
@@ -154,50 +142,31 @@ def cmd_run(args: argparse.Namespace) -> int:
         log.error("%s", exc)
         return 1
 
-    mutex = _single_instance()
+    mutex = acquire_single_instance()
     if mutex is None:
-        log.error("minikeys уже запущен (второй экземпляр не нужен).")
+        log.error("minikeys уже запущен (консоль или GUI) — второй экземпляр не нужен.")
         return 3
 
-    worker = Worker(WinOutput())
-    engine = Engine(profile, worker.submit)
+    service = RemapService(dll=args.dll)
+    service.set_profile(profile)
+    try:
+        service.start()
+    except InterceptionError as exc:
+        log.error("Interception: %s", exc)
+        return 2
     watcher = _ConfigWatcher(Path(args.config))
     log.info("minikeys %s: биндов %d, ищу устройство: %s",
              __version__, len(profile.binds), profile.device.describe())
-
-    with _open_interception(args.dll) as ic:
-        router = Router(engine)
-        next_scan = 0.0
-        try:
-            while True:
-                now = time.monotonic()
-                if now >= next_scan:
-                    next_scan = now + RESCAN_SECONDS
-                    if watcher.changed():
-                        profile = _reload(profile, watcher.path)
-                        engine.set_profile(profile)
-                    found = frozenset(dev for dev, ids in ic.devices(KEYBOARDS).items()
-                                      if profile.device.matches(dev, ids))
-                    if found != router.targets:
-                        ic.capture_only(found)
-                        _report_targets(ic, router.targets, found)
-                        if not found:
-                            engine.release_all()
-                        router.targets = found
-
-                dev = ic.wait(WAIT_MS)
-                if not dev:
-                    continue
-                stroke = ic.receive(dev)
-                if stroke is None:
-                    continue
-                if not is_keyboard(dev) or router.route(dev, stroke.key.code, stroke.key.state):
-                    ic.send(dev, stroke)
-        except KeyboardInterrupt:
-            log.info("остановлено")
-        finally:
-            engine.release_all()
-            worker.stop()
+    try:
+        while service.running:
+            time.sleep(RESCAN_SECONDS)
+            if watcher.changed():
+                profile = _reload(profile, watcher.path)
+                service.set_profile(profile)
+    except KeyboardInterrupt:
+        log.info("остановлено")
+    finally:
+        service.stop()
     return 0
 
 
@@ -209,17 +178,6 @@ def _reload(profile: Profile, path: Path) -> Profile:
         return profile
     log.info("конфиг перезагружен: биндов %d", len(new.binds))
     return new
-
-
-def _report_targets(ic, old: frozenset[int], new: frozenset[int]) -> None:
-    for dev in sorted(new - old):
-        ids = ic.hardware_ids(dev)
-        log.info("перехватываю устройство №%d: %s", dev, ids[0] if ids else "?")
-    for dev in sorted(old - new):
-        log.info("устройство №%d отключено", dev)
-    if not new:
-        log.warning("мини-клавиатура не найдена — жду подключения "
-                    "(проверьте [device] в конфиге: python -m minikeys identify)")
 
 
 def main(argv: list[str] | None = None) -> int:

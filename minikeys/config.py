@@ -1,7 +1,8 @@
-"""Загрузка и проверка config.toml."""
+"""Загрузка и проверка конфигурации (config.toml или profile.json от GUI)."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -57,12 +58,19 @@ class Profile:
 def load_profile(path: str | Path) -> Profile:
     path = Path(path)
     try:
-        with path.open("rb") as f:
-            data = tomllib.load(f)
+        if path.suffix.lower() == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            with path.open("rb") as f:
+                data = tomllib.load(f)
     except FileNotFoundError:
         raise ConfigError(f"файл конфигурации не найден: {path}") from None
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: синтаксическая ошибка TOML: {exc}") from None
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path}: синтаксическая ошибка JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: ожидается объект с секциями device/settings/binds")
     try:
         profile = parse_profile(data)
     except ConfigError as exc:
@@ -204,7 +212,8 @@ def parse_binding(spec: Any, where: str) -> Binding:
 
 
 def parse_profile(data: dict) -> Profile:
-    _check_keys(data, {"device", "settings", "binds"}, "корень файла")
+    # layout — расположение кнопок в GUI, на работу перехвата не влияет
+    _check_keys(data, {"device", "settings", "binds", "layout"}, "корень файла")
     device = parse_device(data.get("device"))
 
     settings = data.get("settings", {})

@@ -1,12 +1,13 @@
 ﻿# Автозапуск minikeys при входе в Windows (через Планировщик заданий, без окна консоли).
 # Запускать в PowerShell ОТ АДМИНИСТРАТОРА:
 #
-#   powershell -ExecutionPolicy Bypass -File tools\autostart.ps1           # включить
-#   powershell -ExecutionPolicy Bypass -File tools\autostart.ps1 -Remove   # выключить
+#   powershell -ExecutionPolicy Bypass -File tools\autostart.ps1            # GUI, свёрнутый в трей
+#   powershell -ExecutionPolicy Bypass -File tools\autostart.ps1 -Console   # консольная версия (config.toml)
+#   powershell -ExecutionPolicy Bypass -File tools\autostart.ps1 -Remove    # выключить
 #
 # Задание выполняется с наивысшими правами — иначе SendInput не сможет
 # нажимать клавиши в окнах, запущенных от администратора.
-param([switch]$Remove)
+param([switch]$Remove, [switch]$Console)
 
 $TaskName = 'minikeys'
 
@@ -24,8 +25,12 @@ if (-not $PythonW) {
 }
 
 $user = "$env:USERDOMAIN\$env:USERNAME"
-$action = New-ScheduledTaskAction -Execute $PythonW `
-    -Argument "-m minikeys run --log-file `"$Root\minikeys.log`"" -WorkingDirectory $Root
+if ($Console) {
+    $arguments = "-m minikeys run --log-file `"$Root\minikeys.log`""
+} else {
+    $arguments = "-m minikeys.gui --minimized"   # GUI сам пишет лог в minikeys.log
+}
+$action = New-ScheduledTaskAction -Execute $PythonW -Argument $arguments -WorkingDirectory $Root
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

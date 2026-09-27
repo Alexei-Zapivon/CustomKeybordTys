@@ -3,3 +3,5 @@ __pycache__/
 *.log
 # Бинарники Interception не храним в репозитории — скачиваются с GitHub (см. README)
 lib/
+profile.json
+*.tmp
