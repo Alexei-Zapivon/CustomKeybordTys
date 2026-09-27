@@ -46,16 +46,18 @@ class Engine:
     def __init__(self, profile: Profile, submit: Callable[[Action], None]):
         self.profile = profile
         self._submit = submit
-        self._held: dict[str, Binding] = {}  # зажатые клавиши -> бинд, сработавший на нажатие
+        # (устройство, клавиша) -> бинд, сработавший на нажатие. Устройство в ключе нужно,
+        # когда подключены две одинаковые мини-клавиатуры: «a» на каждой живёт своей жизнью.
+        self._held: dict[tuple[int, str], Binding] = {}
 
     def set_profile(self, profile: Profile) -> None:
         # уже зажатые клавиши отпустятся по старым биндам (они хранятся в _held)
         self.profile = profile
 
-    def handle(self, key: str, is_down: bool) -> bool:
+    def handle(self, key: str, is_down: bool, device: int = 0) -> bool:
         """Обработать нажатие. True — нажатие поглощено, False — пропустить в систему."""
-        if key in self._held or key in self.profile.binds:
-            self._dispatch(key, is_down)
+        if (device, key) in self._held or key in self.profile.binds:
+            self._dispatch((device, key), is_down)
             return True
         # неназначенная клавиша
         if is_down and self.profile.log_keys and key not in IGNORED_INPUT:
@@ -63,26 +65,26 @@ class Engine:
                      "заглушена" if self.profile.unmapped == "block" else "пропущена")
         return self.profile.unmapped == "block"
 
-    def _dispatch(self, key: str, is_down: bool) -> None:
+    def _dispatch(self, held_key: tuple[int, str], is_down: bool) -> None:
         if not is_down:
-            binding = self._held.pop(key, None)  # None: клавиша была зажата ещё до запуска
+            binding = self._held.pop(held_key, None)  # None: клавиша была зажата ещё до запуска
             if binding is not None and binding.on_release is not None:
                 self._submit(binding.on_release)
             return
 
-        is_repeat = key in self._held
-        binding = self._held.get(key) or self.profile.binds[key]
-        self._held[key] = binding
+        is_repeat = held_key in self._held
+        binding = self._held.get(held_key) or self.profile.binds[held_key[1]]
+        self._held[held_key] = binding
         if is_repeat and not (binding.is_hold or binding.repeat):
             return
         if not is_repeat and self.profile.log_keys:
-            log.info("%s → %s", key, binding.describe())
+            log.info("%s → %s", held_key[1], binding.describe())
         self._submit(binding.on_press)
 
     def release_all(self) -> None:
         """Отпустить всё, что держат remap-бинды (при выходе/потере устройства)."""
-        for key in list(self._held):
-            self._dispatch(key, is_down=False)
+        for held_key in list(self._held):
+            self._dispatch(held_key, is_down=False)
 
 
 class Router:
@@ -100,7 +102,7 @@ class Router:
         if self._e1_tail is not None and not state & KEY_E1 and code == 0x45:
             forward, self._e1_tail = not self._e1_tail, None  # хвост Pause — как и его начало
             return forward
-        swallow = self.engine.handle(name_from_stroke(code, state), is_down=not state & KEY_UP)
+        swallow = self.engine.handle(name_from_stroke(code, state), not state & KEY_UP, device)
         if state & KEY_E1:
             self._e1_tail = swallow
         return not swallow

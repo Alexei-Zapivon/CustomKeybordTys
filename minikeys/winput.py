@@ -63,7 +63,7 @@ class WinOutput:
         if sent != len(inputs):
             err = ctypes.get_last_error()
             raise OSError(err, "SendInput заблокирован. Если активное окно запущено от "
-                               "администратора — запустите minikeys тоже от администратора.")
+                               "администратора, запустите minikeys тоже от администратора.")
 
     def _key(self, key: str, up: bool) -> INPUT:
         vk = VK[key]

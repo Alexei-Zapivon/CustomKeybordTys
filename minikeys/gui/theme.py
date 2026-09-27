@@ -44,11 +44,15 @@ QTabBar::tab {{ background: {PANEL}; padding: 7px 14px; border: 1px solid {BORDE
 QTabBar::tab:selected {{ background: {KEY_HOVER}; }}
 QStatusBar {{ background: {PANEL}; color: {SUBTLE}; }}
 QLabel#hint {{ color: {SUBTLE}; }}
+QLabel#panelTitle {{ color: {SUBTLE}; font-weight: bold; padding: 2px 2px 6px 2px; }}
+QWidget#profilePanel QListWidget::item {{ padding: 9px 6px; }}
 QLabel#banner {{ background: {FLASH}; color: #1b1d23; padding: 10px; font-weight: bold; border-radius: 6px; }}
 QMenu {{ background: {PANEL}; border: 1px solid {BORDER}; }}
 QMenu::item {{ padding: 6px 22px; }}
 QMenu::item:selected {{ background: {ACCENT}; }}
-QCheckBox::indicator {{ width: 16px; height: 16px; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {SUBTLE}; border-radius: 4px;
+    background: {PANEL}; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 """
 
 

@@ -1,10 +1,17 @@
-"""Главное окно minikeys: поле с кнопками, панель инструментов, трей.
+"""Главное окно minikeys: профили слева, поле с кнопками, панель инструментов, трей.
 
 Архитектура:
   GUI-поток (Qt)            ←сигналы─  ServiceBridge  ←вызовы─  поток RemapService (драйвер)
        │ set_profile / set_mode / list_devices (очередь команд) ──────────────►
-Интерфейс только редактирует документ профиля (profile.json) и отдаёт готовый
-Profile перехватчику; перехват идёт в своём потоке и не зависит от окна.
+Интерфейс редактирует документ profile.json (несколько профилей) и отдаёт перехватчику
+готовый Profile активного профиля; перехват идёт в своём потоке и не зависит от окна.
+
+Изменения версии 1.1:
+  * заголовок окна просто «minikeys», в текстах интерфейса нет длинных тире;
+  * боковая панель «Профили» (gui/profiles.py), переключение на лету, профили в трее;
+  * «Настройки» → «Запускать вместе с Windows» (autostart.py) и «Запускать свернутой»;
+  * выбор «только это устройство» для нескольких одинаковых клавиатур (dialogs.DeviceDialog);
+  * пути через paths.py, чтобы всё работало и в собранном minikeys.exe.
 """
 
 from __future__ import annotations
@@ -15,30 +22,40 @@ import logging.handlers
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import (QApplication, QInputDialog, QLabel, QMainWindow, QMenu,
-                               QMessageBox, QSizePolicy, QSystemTrayIcon, QToolBar, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
+                               QMenu, QMessageBox, QSizePolicy, QSystemTrayIcon, QToolBar,
+                               QToolButton, QVBoxLayout, QWidget)
 
-from .. import __version__, store
+from .. import __version__, autostart, paths, store
 from ..config import ConfigError
 from ..service import Mode, RemapService
 from . import theme
 from .bridge import ServiceBridge
 from .canvas import Board
 from .dialogs import DeviceDialog, EncoderDialog, EncoderWizard, KeyDialog
+from .profiles import ProfilePanel
 
 log = logging.getLogger("minikeys")
 
 
+def device_text(device: dict) -> str:
+    """'VID_1189&PID_8840' или 'VID_1189&PID_8840 №4' (если выбрано одно устройство)."""
+    text = device.get("match") or ""
+    if device.get("device_number") is not None:
+        text = f"{text} №{device['device_number']}".strip()
+    return text
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, service: RemapService, bridge: ServiceBridge, doc: dict,
+    def __init__(self, service: RemapService, bridge: ServiceBridge, root: dict,
                  profile_path: Path) -> None:
         super().__init__()
         self.service = service
         self.bridge = bridge
-        self.doc = doc
+        self.root = root                         # весь profile.json: профили + настройки
+        self.doc = store.active_profile(root)    # активный профиль (ссылка внутрь root)
         self.profile_path = profile_path
         self.service_ok = True
         self._learning = False
@@ -47,9 +64,9 @@ class MainWindow(QMainWindow):
         self._tray_hint_shown = False
         self._targets: dict[int, list[str]] = service.targets  # то, что сервис нашёл до нас
 
-        self.setWindowTitle("minikeys — мини-клавиатура")
+        self.setWindowTitle("minikeys")
         self.setWindowIcon(theme.app_icon())
-        self.resize(980, 640)
+        self.resize(1180, 660)
 
         self._build_toolbar()
         self.banner = QLabel()
@@ -57,11 +74,18 @@ class MainWindow(QMainWindow):
         self.banner.setWordWrap(True)
         self.banner.hide()
         self.board = Board()
+        self.profiles = ProfilePanel()
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.addWidget(self.banner)
+        right.addWidget(self.board, 1)
         central = QWidget()
-        lay = QVBoxLayout(central)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.addWidget(self.banner)
-        lay.addWidget(self.board, 1)
+        lay = QHBoxLayout(central)
+        lay.setContentsMargins(0, 0, 10, 10)
+        lay.setSpacing(10)
+        lay.addWidget(self.profiles)
+        lay.addLayout(right, 1)
         self.setCentralWidget(central)
 
         self.device_label = QLabel()
@@ -75,12 +99,18 @@ class MainWindow(QMainWindow):
         self.board.layout_changed.connect(self.save)
         self.board.key_menu.connect(self._key_menu)
         self.board.encoder_menu.connect(self._encoder_menu)
+        self.profiles.activated.connect(self.switch_profile)
+        self.profiles.create_requested.connect(self.new_profile)
+        self.profiles.duplicate_requested.connect(self.duplicate_profile)
+        self.profiles.rename_requested.connect(self.rename_profile)
+        self.profiles.delete_requested.connect(self.delete_profile)
         bridge.targets_changed.connect(self._on_targets)
         bridge.key_event.connect(self._on_key_event)
         bridge.learned.connect(self._on_learned)
         bridge.stopped.connect(self._on_service_stopped)
 
         self.board.set_document(self.doc)
+        self._refresh_profiles()
         self._update_device_label()
 
     def set_service_error(self, error: str) -> None:
@@ -98,7 +128,7 @@ class MainWindow(QMainWindow):
         self.act_device.triggered.connect(self.choose_device)
         self.act_learn = QAction("＋ Кнопка", self)
         self.act_learn.setCheckable(True)
-        self.act_learn.setToolTip("Нажимайте кнопки на мини-клавиатуре — они появятся на поле")
+        self.act_learn.setToolTip("Нажимайте кнопки на мини-клавиатуре, они появятся на поле")
         self.act_learn.toggled.connect(self.set_learning)
         self.act_encoder = QAction("＋ Крутилка", self)
         self.act_encoder.triggered.connect(self.add_encoder)
@@ -109,14 +139,36 @@ class MainWindow(QMainWindow):
         self.act_enabled.setChecked(True)
         self.act_enabled.toggled.connect(self.set_enabled)
 
+        # --- меню «Настройки» ---
         self.act_block = QAction("Глушить неназначенные кнопки", self)
         self.act_block.setCheckable(True)
         self.act_block.setChecked(self.doc["settings"].get("unmapped", "block") == "block")
         self.act_block.toggled.connect(self._set_unmapped)
+
+        # НОВОЕ: автозагрузка (реестр или Планировщик, см. autostart.py)
+        self.act_autostart = QAction("Запускать вместе с Windows", self)
+        self.act_autostart.setCheckable(True)
+        try:
+            self.act_autostart.setChecked(autostart.status() is not None)
+        except Exception as exc:  # нет доступа к реестру/schtasks: просто показываем «выключено»
+            log.warning("не удалось проверить автозапуск: %s", exc)
+        self.act_autostart.setEnabled(sys.platform == "win32")
+        self.act_autostart.toggled.connect(self._set_autostart)
+
+        # НОВОЕ: запуск сразу в трей
+        self.act_start_min = QAction("Запускать свернутой", self)
+        self.act_start_min.setCheckable(True)
+        self.act_start_min.setChecked(bool(self.root["app"].get("start_minimized")))
+        self.act_start_min.setToolTip("При запуске окно не показывается, программа сразу уходит в трей")
+        self.act_start_min.toggled.connect(self._set_start_minimized)
+
         settings = QMenu(self)
         settings.addAction(self.act_block)
         settings.addSeparator()
-        settings.addAction("Открыть папку с профилем", self._open_profile_folder)
+        settings.addAction(self.act_autostart)
+        settings.addAction(self.act_start_min)
+        settings.addSeparator()
+        settings.addAction("Открыть папку с профилями", self._open_profile_folder)
         settings_btn = QToolButton()
         settings_btn.setText("⚙ Настройки")
         settings_btn.setMenu(settings)
@@ -136,6 +188,7 @@ class MainWindow(QMainWindow):
         self.tray.setToolTip("minikeys")
         menu = QMenu()
         menu.addAction("Открыть", self.show_window)
+        self.tray_profiles = menu.addMenu("Профиль")   # НОВОЕ: переключение профиля из трея
         menu.addAction(self.act_enabled)
         menu.addSeparator()
         menu.addAction("Выход", self.quit)
@@ -161,7 +214,7 @@ class MainWindow(QMainWindow):
         if not self._tray_hint_shown:
             self._tray_hint_shown = True
             self.tray.showMessage("minikeys работает в фоне",
-                                  "Бинды активны. Открыть окно или выйти — через значок в трее.",
+                                  "Бинды активны. Открыть окно или выйти можно через значок в трее.",
                                   theme.app_icon(), 4000)
 
     def quit(self) -> None:
@@ -176,22 +229,23 @@ class MainWindow(QMainWindow):
     def _update_device_label(self) -> None:
         if not self.service_ok:
             return
-        match = self.doc["device"].get("match") or ""
+        prefix = f"Профиль «{self.root['active']}»: "
+        device = device_text(self.doc["device"])
         if not store.device_configured(self.doc):
-            self._set_status(theme.WARN, "Мини-клавиатура не выбрана — нажмите «Устройство…»")
+            self._set_status(theme.WARN, prefix + "мини-клавиатура не выбрана, нажмите «Устройство»")
         elif not self.act_enabled.isChecked():
-            self._set_status(theme.SUBTLE, f"{match}: перехват выключен — все кнопки работают как обычно")
+            self._set_status(theme.SUBTLE, prefix + f"{device}, перехват выключен, все кнопки работают как обычно")
         elif self._targets:
             numbers = ", ".join(f"№{d}" for d in sorted(self._targets))
-            self._set_status(theme.OK, f"{match} подключена ({numbers}) — бинды работают")
+            self._set_status(theme.OK, prefix + f"{device} подключена ({numbers}), бинды работают")
         else:
-            self._set_status(theme.WARN, f"{match} не найдена — подключите мини-клавиатуру")
+            self._set_status(theme.WARN, prefix + f"{device} не найдена, подключите мини-клавиатуру")
 
-    # --- профиль -----------------------------------------------------------------
+    # --- сохранение ----------------------------------------------------------------
     def save(self) -> None:
-        """Сохранить профиль и сразу применить его в перехватчике."""
+        """Сохранить profile.json и сразу применить активный профиль в перехватчике."""
         try:
-            store.save_document(self.doc, self.profile_path)
+            store.save_root(self.root, self.profile_path)
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось сохранить", str(exc))
         try:
@@ -204,19 +258,128 @@ class MainWindow(QMainWindow):
         self.doc["settings"]["unmapped"] = "block" if block else "pass"
         self.save()
 
+    def _set_start_minimized(self, on: bool) -> None:
+        self.root["app"]["start_minimized"] = on
+        self.save()
+
+    def _set_autostart(self, on: bool) -> None:
+        try:
+            if on:
+                method = autostart.enable()
+                if method == autostart.REGISTRY:
+                    QMessageBox.information(
+                        self, "Автозапуск включён",
+                        "minikeys будет запускаться при входе в Windows.\n\n"
+                        "Программа сейчас работает без прав администратора, поэтому и при "
+                        "автозапуске стартует без них: в окнах, запущенных от администратора "
+                        "(Диспетчер задач, некоторые игры), бинды срабатывать не будут.\n\n"
+                        "Если это нужно: запустите minikeys от имени администратора, снимите и "
+                        "снова поставьте эту галочку. Тогда автозапуск пойдёт через Планировщик "
+                        "заданий с нужными правами.")
+            else:
+                autostart.disable()
+        except Exception as exc:
+            QMessageBox.warning(self, "Автозапуск", str(exc))
+            self.act_autostart.blockSignals(True)
+            self.act_autostart.setChecked(not on)
+            self.act_autostart.blockSignals(False)
+
     def _open_profile_folder(self) -> None:
-        from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.profile_path.parent)))
+
+    # --- профили (НОВОЕ) ---------------------------------------------------------
+    def _refresh_profiles(self) -> None:
+        names = list(self.root["profiles"])
+        self.profiles.set_profiles(names, self.root["active"])
+        self.tray_profiles.clear()
+        group = QActionGroup(self.tray_profiles)
+        for name in names:
+            act = self.tray_profiles.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == self.root["active"])
+            act.triggered.connect(lambda _checked=False, n=name: self.switch_profile(n))
+            group.addAction(act)
+        self.tray.setToolTip(f"minikeys: {self.root['active']}")
+
+    def switch_profile(self, name: str) -> None:
+        """Переключение на лету: перехватчик сразу получает бинды нового профиля."""
+        if name == self.root["active"] or name not in self.root["profiles"]:
+            return
+        if self._learning:
+            self.act_learn.setChecked(False)
+        self.doc = store.set_active(self.root, name)
+        self.board.set_document(self.doc)
+        self.act_block.blockSignals(True)
+        self.act_block.setChecked(self.doc["settings"].get("unmapped", "block") == "block")
+        self.act_block.blockSignals(False)
+        self.save()
+        self._refresh_profiles()
+        self._update_device_label()
+        self.statusBar().showMessage(f"Профиль «{name}»", 2500)
+        if not self.isVisible():
+            self.tray.showMessage("minikeys", f"Профиль «{name}»", theme.app_icon(), 1500)
+
+    def _ask_name(self, title: str, text: str, default: str) -> str | None:
+        name, ok = QInputDialog.getText(self, title, text, text=default)
+        return name.strip() if ok and name.strip() else None
+
+    def new_profile(self) -> None:
+        name = self._ask_name("Новый профиль",
+                              "Название профиля.\nУстройство и расположение кнопок возьмутся из текущего, "
+                              "бинды будут пустыми.", store.unique_name(self.root, "Профиль"))
+        if name:
+            self._create(name, copy_binds=False)
+
+    def duplicate_profile(self, source: str) -> None:
+        name = self._ask_name("Копия профиля", "Название копии:",
+                              store.unique_name(self.root, f"{source} копия"))
+        if name:
+            self._create(name, copy_binds=True, template=self.root["profiles"][source])
+
+    def _create(self, name: str, copy_binds: bool, template: dict | None = None) -> None:
+        try:
+            name = store.create_profile(self.root, name, template or self.doc, copy_binds)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Профиль", str(exc))
+            return
+        self.switch_profile(name)
+
+    def rename_profile(self, old: str) -> None:
+        name = self._ask_name("Переименовать профиль", "Новое название:", old)
+        if not name:
+            return
+        try:
+            store.rename_profile(self.root, old, name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Профиль", str(exc))
+            return
+        store.save_root(self.root, self.profile_path)
+        self._refresh_profiles()
+        self._update_device_label()
+
+    def delete_profile(self, name: str) -> None:
+        if len(self.root["profiles"]) <= 1:
+            return
+        if QMessageBox.question(self, "Удалить профиль",
+                                f"Удалить профиль «{name}» со всеми биндами?") != QMessageBox.Yes:
+            return
+        was_active = name == self.root["active"]
+        store.delete_profile(self.root, name)
+        if was_active:
+            self.doc = store.active_profile(self.root)
+            self.board.set_document(self.doc)
+        self.save()
+        self._refresh_profiles()
+        self._update_device_label()
 
     # --- устройство --------------------------------------------------------------
     def choose_device(self) -> bool:
         if not self._require_service():
             return False
-        dialog = DeviceDialog(self.service, self.bridge, self.doc["device"].get("match") or "", self)
+        dialog = DeviceDialog(self.service, self.bridge, self.doc["device"], self)
         if dialog.exec() != DeviceDialog.Accepted:
             return False
-        self.doc["device"] = {"match": dialog.result_match}
+        self.doc["device"] = dialog.result_device
         self.save()
         self._update_device_label()
         return True
@@ -256,7 +419,7 @@ class MainWindow(QMainWindow):
         if store.device_configured(self.doc):
             return True
         QMessageBox.information(self, "Сначала выберите устройство",
-                                "Укажите, какая клавиатура — мини-клавиатура. "
+                                "Укажите, какая клавиатура является мини-клавиатурой. "
                                 "Остальные клавиатуры программа трогать не будет.")
         return self.choose_device()
 
@@ -268,9 +431,9 @@ class MainWindow(QMainWindow):
         if on:
             self.act_enabled.setChecked(True)
             self.service.set_mode(Mode.LEARN)
-            self.banner.setText("Режим добавления: нажимайте кнопки на мини-клавиатуре — каждая новая "
+            self.banner.setText("Режим добавления: нажимайте кнопки на мини-клавиатуре, каждая новая "
                                 "появится на поле. Бинды сейчас не срабатывают. "
-                                "Закончили — снова нажмите «＋ Кнопка».")
+                                "Когда закончите, снова нажмите «＋ Кнопка».")
             self.banner.show()
         else:
             self.banner.hide()
@@ -386,31 +549,36 @@ class MainWindow(QMainWindow):
 
 
 # --- запуск ------------------------------------------------------------------------
-def _setup_logging() -> None:
+def _setup_logging(folder: Path) -> None:
     handlers: list[logging.Handler] = []
     try:
         handlers.append(logging.handlers.RotatingFileHandler(
-            store.ROOT / "minikeys.log", maxBytes=1_000_000, backupCount=1, encoding="utf-8"))
+            folder / "minikeys.log", maxBytes=1_000_000, backupCount=1, encoding="utf-8"))
     except OSError:
         pass
-    if sys.stderr is not None:
+    if sys.stderr is not None:  # в minikeys.exe (windowed) консоли нет
         handlers.append(logging.StreamHandler())
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                         datefmt="%H:%M:%S", handlers=handlers or [logging.NullHandler()])
 
 
 def main(argv: list[str] | None = None, service_factory=None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m minikeys.gui")
-    parser.add_argument("--minimized", action="store_true", help="запуститься свёрнутым в трей")
-    parser.add_argument("--profile", default=str(store.DEFAULT_PATH), help="путь к profile.json")
+    parser = argparse.ArgumentParser(prog="minikeys")
+    parser.add_argument("--minimized", action="store_true", help="запуститься свернутой в трей")
+    parser.add_argument("--autostart", action="store_true",
+                        help="запуск из автозагрузки Windows (ставится автоматически)")
+    parser.add_argument("--config", help="путь к profile.json (по умолчанию рядом с программой)")
     parser.add_argument("--dll", help="путь к interception.dll")
-    args = parser.parse_args(argv)
-    _setup_logging()
+    args, _unknown = parser.parse_known_args(argv)
+
+    profile_path = Path(args.config) if args.config else store.default_path()
+    _setup_logging(profile_path.parent)
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("minikeys")
     app.setStyle("Fusion")
     app.setStyleSheet(theme.STYLESHEET)
+    app.setWindowIcon(theme.app_icon())
     app.setQuitOnLastWindowClosed(False)  # закрытие окна = сворачивание в трей
 
     mutex = None
@@ -418,33 +586,40 @@ def main(argv: list[str] | None = None, service_factory=None) -> int:
         from ..service import acquire_single_instance
         mutex = acquire_single_instance()
         if mutex is None:
-            QMessageBox.information(None, "minikeys", "minikeys уже запущен — ищите значок в трее.")
+            if not args.autostart:
+                QMessageBox.information(None, "minikeys", "minikeys уже запущена, ищите значок в трее.")
             return 0
 
-    profile_path = Path(args.profile)
     try:
-        doc = store.load_document(profile_path)
+        root = store.load_root(profile_path)
     except ConfigError as exc:
         QMessageBox.critical(None, "minikeys", f"Профиль повреждён:\n{exc}")
         return 1
     if not profile_path.exists():
-        store.save_document(doc, profile_path)  # первый запуск: фиксируем перенос из config.toml
+        store.save_root(root, profile_path)  # первый запуск: фиксируем перенос из config.toml
+    try:
+        autostart.refresh()  # программу перенесли в другую папку: поправить путь автозапуска
+    except Exception as exc:
+        log.warning("не удалось обновить автозапуск: %s", exc)
 
     bridge = ServiceBridge()
     service = (service_factory or RemapService)(bridge, args.dll)
-    # окно подписывается на сигналы ДО запуска сервиса — первые события не потеряются
-    window = MainWindow(service, bridge, doc, profile_path)
+    # окно подписывается на сигналы ДО запуска сервиса, чтобы первые события не потерялись
+    window = MainWindow(service, bridge, root, profile_path)
     try:
-        service.set_profile(store.build_profile(doc))
+        service.set_profile(store.build_profile(store.active_profile(root)))
         service.start()
     except ConfigError as exc:
         window.set_service_error(f"ошибка в профиле: {exc}")
     except Exception as exc:
         log.error("перехватчик не запущен: %s", exc)
         window.set_service_error(str(exc))
-    if not args.minimized or not QSystemTrayIcon.isSystemTrayAvailable():
+
+    minimized = args.minimized or root["app"].get("start_minimized", False)
+    if not minimized or not QSystemTrayIcon.isSystemTrayAvailable():
         window.show()
-    log.info("minikeys GUI %s запущен, профиль: %s", __version__, profile_path)
+    log.info("minikeys %s запущена (%s), профиль: %s, файл: %s", __version__,
+             "exe" if paths.FROZEN else "исходники", root["active"], profile_path)
     code = app.exec()
     service.stop()
     del mutex

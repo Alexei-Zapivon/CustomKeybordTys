@@ -174,7 +174,7 @@ def text_to_macro(text: str) -> list:
             raise ValueError(f"строка {n}: после «{word}» нужно значение")
         if kind == "delay":
             if not rest.isdigit():
-                raise ValueError(f"строка {n}: пауза — число миллисекунд")
+                raise ValueError(f"строка {n}: пауза задаётся числом миллисекунд")
             steps.append({"delay": int(rest)})
         elif kind == "text":
             steps.append({"text": _unescape(raw.strip()[len(word):].lstrip())})

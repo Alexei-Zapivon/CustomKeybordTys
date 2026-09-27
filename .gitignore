@@ -5,3 +5,5 @@ __pycache__/
 lib/
 profile.json
 *.tmp
+build/
+dist/

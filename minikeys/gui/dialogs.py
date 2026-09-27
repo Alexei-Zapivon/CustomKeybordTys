@@ -68,7 +68,7 @@ class HotkeyEdit(QWidget):
         self.record = QPushButton("⏺ Записать")
         self.record.setCheckable(True)
         self.record.setToolTip("Нажмите, затем нажмите сочетание на ОСНОВНОЙ клавиатуре.\n"
-                               "Win+… и Alt+Tab система перехватывает сама — их введите текстом.")
+                               "Win+… и Alt+Tab система перехватывает сама, их введите текстом.")
         self.record.toggled.connect(self._set_recording)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -149,8 +149,8 @@ class ActionEditor(QWidget):
         self.pages = QStackedWidget()
 
         # none
-        self.pages.addWidget(_hint("Кнопка ничего не делает (нажатие глушится или пропускается — "
-                                   "см. настройку «Неназначенные кнопки»)."))
+        self.pages.addWidget(_hint("Кнопка ничего не делает (нажатие глушится или пропускается, "
+                                   "см. «Настройки» → «Глушить неназначенные кнопки»)."))
         # hotkey
         page = QWidget()
         lay = QVBoxLayout(page)
@@ -158,7 +158,7 @@ class ActionEditor(QWidget):
         self.hotkey_repeat = QCheckBox("Повторять, пока кнопка зажата")
         lay.addWidget(self.hotkey)
         lay.addWidget(self.hotkey_repeat)
-        lay.addWidget(_hint("Модификаторы: ctrl, shift, alt, win. Клавиши: a–z, 0–9, f1–f24, enter, esc, "
+        lay.addWidget(_hint("Модификаторы: ctrl, shift, alt, win. Клавиши: a-z, 0-9, f1-f24, enter, esc, "
                             "space, tab, delete, home, end, page_up, up, down, left, right…\n"
                             "Сочетание не зависит от раскладки: ctrl+c работает и на русской."))
         lay.addStretch()
@@ -222,7 +222,7 @@ class ActionEditor(QWidget):
         self.remap = HotkeyEdit()
         lay.addWidget(self.remap)
         lay.addWidget(_hint("Пока кнопка мини-клавиатуры зажата, зажаты и эти клавиши. "
-                            "Например «ctrl» — кнопка станет вторым Ctrl, «f13» — клавишей F13."))
+                            "Например, «ctrl» сделает кнопку вторым Ctrl, а «f13» клавишей F13."))
         lay.addStretch()
         self.pages.addWidget(page)
 
@@ -431,7 +431,7 @@ class EncoderWizard(QDialog):
                               "Поверните/нажмите крутилку ещё раз.")
             return
         self.result_keys[part] = key
-        done = ", ".join(f"{PART_TITLES[p]}: {k or '—'}" for p, k in self.result_keys.items())
+        done = ", ".join(f"{PART_TITLES[p]}: {k or 'нет'}" for p, k in self.result_keys.items())
         self.info.setText("Распознано: " + done)
         self._step += 1
         if self._step >= len(self.STEPS):
@@ -441,18 +441,25 @@ class EncoderWizard(QDialog):
 
 
 class DeviceDialog(QDialog):
-    """Выбор мини-клавиатуры из списка подключённых устройств или нажатием."""
+    """Выбор мини-клавиатуры из списка подключённых устройств или нажатием.
 
-    def __init__(self, service, bridge, current_match: str, parent: QWidget | None = None) -> None:
+    Результат (result_device):
+      {"match": "VID_1189&PID_8840"}                      все клавиатуры этой модели (по умолчанию)
+      {"match": "VID_1189&PID_8840", "device_number": 4}  только одна из одинаковых клавиатур
+    """
+
+    def __init__(self, service, bridge, current_device: dict, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Выбор мини-клавиатуры")
-        self.setMinimumSize(620, 420)
+        self.setMinimumSize(640, 460)
         self.service = service
-        self.current = current_match.upper()
-        self.result_match = current_match
+        self.current = (current_device.get("match") or "").upper()
+        self.current_number = current_device.get("device_number")
+        self.result_device = dict(current_device)
         self._probing = False
 
         self.list = QListWidget()
+        self.list.currentItemChanged.connect(lambda *_: self._update_same_model_hint())
         self.status = _hint("")
         self.detect = QPushButton("🔍 Определить нажатием")
         self.detect.setCheckable(True)
@@ -461,21 +468,32 @@ class DeviceDialog(QDialog):
         refresh.clicked.connect(self.reload)
         self.manual = QLineEdit()
         self.manual.setPlaceholderText("или вручную: VID_1189&PID_8840")
+        # НОВОЕ: несколько одинаковых клавиатур
+        self.only_this = QCheckBox("Только это устройство (если подключено несколько одинаковых)")
+        self.only_this.setChecked(self.current_number is not None)
+        self.same_hint = _hint("")
 
         row = QHBoxLayout()
         row.addWidget(self.detect)
         row.addWidget(refresh)
         row.addStretch()
         lay = QVBoxLayout(self)
-        lay.addWidget(_hint("Выберите мини-клавиатуру. Не уверены какая? Нажмите «Определить нажатием» "
-                            "и нажмите кнопку на мини-клавиатуре — строка выделится сама."))
+        lay.addWidget(_hint("Выберите мини-клавиатуру. Не уверены, какая? Нажмите «Определить нажатием» "
+                            "и нажмите кнопку на мини-клавиатуре: строка выделится сама."))
         lay.addLayout(row)
         lay.addWidget(self.list, 1)
         lay.addWidget(self.status)
+        lay.addWidget(self.only_this)
+        lay.addWidget(self.same_hint)
         lay.addWidget(self.manual)
         lay.addWidget(_buttons(self, "Выбрать"))
         bridge.probed.connect(self._on_probe)
         self.reload()
+
+    def _is_current(self, dev: int, ids: list[str]) -> bool:
+        if not self.current or self.current not in "\n".join(ids).upper():
+            return False
+        return self.current_number is None or self.current_number == dev
 
     def reload(self) -> None:
         self.list.clear()
@@ -489,15 +507,33 @@ class DeviceDialog(QDialog):
             match = store.match_from_hardware_id(ids[0])
             extra = ids[0].split(match, 1)[-1].strip("&") if match in ids[0].upper() else ids[0]
             text = f"№{dev}    {match}    {extra}"
-            if self.current and self.current in "\n".join(ids).upper():
+            current = self._is_current(dev, ids)
+            if current:
                 text += "    ← выбрана сейчас"
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, (dev, match))
             item.setToolTip("\n".join(ids))
             self.list.addItem(item)
-            if self.current and self.current in "\n".join(ids).upper() and self.list.currentRow() < 0:
+            if current and self.list.currentRow() < 0:
                 self.list.setCurrentItem(item)
         self.status.setText(f"Найдено клавиатур: {self.list.count()}")
+        self._update_same_model_hint()
+
+    def _same_model(self, match: str) -> list[int]:
+        return [self.list.item(i).data(Qt.UserRole)[0] for i in range(self.list.count())
+                if self.list.item(i).data(Qt.UserRole)[1] == match]
+
+    def _update_same_model_hint(self) -> None:
+        item = self.list.currentItem()
+        same = self._same_model(item.data(Qt.UserRole)[1]) if item else []
+        if len(same) > 1:
+            numbers = ", ".join(f"№{d}" for d in same)
+            self.same_hint.setText(
+                f"Подключено несколько устройств этой модели ({numbers}). Без галочки бинды работают "
+                "на всех сразу. С галочкой профиль работает только на выбранном устройстве. "
+                "Номер привязан к порядку подключения: после переподключения клавиатуры выберите её заново.")
+        else:
+            self.same_hint.setText("")
 
     def _toggle_probe(self, on: bool) -> None:
         self._probing = on
@@ -514,16 +550,19 @@ class DeviceDialog(QDialog):
         else:
             self.reload()
         self.status.setText(f"Нажатие пришло с устройства №{device} (клавиша «{key}»). "
-                            "Если это мини-клавиатура — нажмите «Выбрать».")
+                            "Если это мини-клавиатура, нажмите «Выбрать».")
         self.detect.setChecked(False)
 
     def accept(self) -> None:
         manual = self.manual.text().strip()
         item = self.list.currentItem()
         if manual:
-            self.result_match = manual.upper()
+            self.result_device = {"match": manual.upper()}
         elif item is not None:
-            self.result_match = item.data(Qt.UserRole)[1]
+            dev, match = item.data(Qt.UserRole)
+            self.result_device = {"match": match}
+            if self.only_this.isChecked():
+                self.result_device["device_number"] = dev
         else:
             QMessageBox.information(self, "Выбор устройства", "Выберите строку в списке или введите VID/PID.")
             return

@@ -99,7 +99,7 @@ def cmd_identify(args: argparse.Namespace) -> int:
 # --- check ----------------------------------------------------------------------
 def cmd_check(args: argparse.Namespace) -> int:
     try:
-        profile = load_profile(args.config)
+        profile = load_profile(args.config, args.profile_name)
     except ConfigError as exc:
         print(f"ОШИБКА: {exc}")
         return 1
@@ -137,7 +137,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .service import RemapService, acquire_single_instance
 
     try:
-        profile = load_profile(args.config)
+        profile = load_profile(args.config, args.profile_name)
     except ConfigError as exc:
         log.error("%s", exc)
         return 1
@@ -161,7 +161,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         while service.running:
             time.sleep(RESCAN_SECONDS)
             if watcher.changed():
-                profile = _reload(profile, watcher.path)
+                profile = _reload(profile, watcher.path, args.profile_name)
                 service.set_profile(profile)
     except KeyboardInterrupt:
         log.info("остановлено")
@@ -170,9 +170,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _reload(profile: Profile, path: Path) -> Profile:
+def _reload(profile: Profile, path: Path, profile_name: str | None) -> Profile:
     try:
-        new = load_profile(path)
+        new = load_profile(path, profile_name)
     except ConfigError as exc:
         log.error("конфиг не перезагружен, работаю со старым: %s", exc)
         return profile
@@ -188,7 +188,10 @@ def main(argv: list[str] | None = None) -> int:
                         choices=["run", "identify", "list", "check"],
                         help="run — работать (по умолчанию); identify — узнать ID клавиатуры "
                              "нажатием; list — список устройств; check — проверить конфиг")
-    parser.add_argument("-c", "--config", default=str(DEFAULT_CONFIG), help="путь к config.toml")
+    parser.add_argument("-c", "--config", default=str(DEFAULT_CONFIG),
+                        help="config.toml или profile.json (от GUI)")
+    parser.add_argument("-p", "--profile-name",
+                        help="какой профиль из profile.json использовать (по умолчанию активный)")
     parser.add_argument("--dll", help="путь к interception.dll (по умолчанию ищется в lib\\)")
     parser.add_argument("--log-file", help="дополнительно писать лог в файл")
     parser.add_argument("-v", "--verbose", action="store_true")

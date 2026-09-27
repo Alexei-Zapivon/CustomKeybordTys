@@ -3,7 +3,6 @@
 import unittest
 
 from minikeys import keys
-from minikeys.actions import Hotkey
 from minikeys.config import parse_profile
 from minikeys.interception import FILTER_KEY_ALL, Stroke
 from minikeys.service import Listener, Mode, RemapService
@@ -190,9 +189,55 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.actions(), [("down", "lctrl"), ("up", "lctrl")])
 
 
-class HotkeyActionSanity(unittest.TestCase):
-    def test_equal(self):
-        self.assertEqual(Hotkey(["a"]), Hotkey(["a"]))
+class TwoIdenticalKeyboardsTest(unittest.TestCase):
+    """Вторая такая же мини-клавиатура (те же VID/PID) подключена как устройство №5."""
+    MINI2 = 5
+
+    def setUp(self):
+        self.ic = FakeInterception()
+        self.ic.devices_now[self.MINI2] = DEVICES[MINI]      # идентичный Hardware ID
+        self.out = FakeOutput()
+        self.svc = RemapService(RecordingListener(), interception_factory=lambda dll: self.ic,
+                                output_factory=lambda: self.out)
+        self.svc._open()
+
+    def tearDown(self):
+        self.svc._shutdown()
+
+    def ticks(self, n=4):
+        for _ in range(n):
+            self.svc.tick()
+
+    def test_same_profile_on_both(self):
+        self.svc.set_profile(profile())                     # match = VID/PID
+        self.ticks()
+        self.assertEqual(self.ic.captured, {MINI, self.MINI2})
+        self.ic.pending += [(MINI, 0x1E, 0), (self.MINI2, 0x1E, 0)]
+        self.ticks()
+        self.svc._worker.stop()
+        self.assertEqual(len(self.out.calls), 2)            # «a» сработала на обеих
+        self.assertEqual(self.ic.sent, [])
+
+    def test_hold_on_both_is_tracked_per_device(self):
+        self.svc.set_profile(parse_profile({"device": {"match": "VID_1189&PID_8840"},
+                                            "binds": {"b": {"remap": "ctrl"}}}))
+        self.ticks()
+        self.ic.pending += [(MINI, 0x30, 0), (self.MINI2, 0x30, 0), (MINI, 0x30, keys.KEY_UP)]
+        self.ticks(6)
+        self.svc._worker.stop()
+        # вторая клавиатура всё ещё держит Ctrl: отпущен только один
+        self.assertEqual(self.out.calls, [("down", "lctrl"), ("down", "lctrl"), ("up", "lctrl")])
+
+    def test_only_one_device(self):
+        self.svc.set_profile(parse_profile({"device": {"match": "VID_1189&PID_8840", "device_number": 5},
+                                            "binds": {"a": "ctrl+c"}}))
+        self.ticks()
+        self.assertEqual(self.ic.captured, {self.MINI2})    # №4 работает как обычная клавиатура
+        # номер 1 занят Apple-клавиатурой другой модели: она не должна попасть под перехват
+        self.svc.set_profile(parse_profile({"device": {"match": "VID_1189&PID_8840", "device_number": 1},
+                                            "binds": {}}))
+        self.ticks()
+        self.assertEqual(self.ic.captured, frozenset())
 
 
 if __name__ == "__main__":

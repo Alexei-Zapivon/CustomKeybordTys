@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from minikeys import bindtext, store
-from minikeys.config import load_profile, parse_binding
+from minikeys.config import ConfigError, load_profile, parse_binding
 
 
 class BindTextTest(unittest.TestCase):
@@ -45,26 +45,80 @@ class StoreTest(unittest.TestCase):
         toml = self.dir / "config.toml"
         toml.write_text('[device]\nmatch = "VID_1189&PID_8840"\n[binds]\na = "ctrl+c"\nb = "ctrl+v"\n',
                         encoding="utf-8")
-        doc = store.load_document(self.dir / "profile.json", toml)
+        root = store.load_root(self.dir / "profile.json", toml)
+        doc = store.active_profile(root)
+        self.assertEqual(root["active"], "Default")
         self.assertEqual(doc["device"]["match"], "VID_1189&PID_8840")
         self.assertEqual(set(doc["layout"]["keys"]), {"a", "b"})
         self.assertNotEqual(doc["layout"]["keys"]["a"], doc["layout"]["keys"]["b"])
 
+    def test_migrates_v1_profile_json(self):
+        path = self.dir / "profile.json"
+        v1 = store.new_document()
+        v1["device"]["match"] = "VID_1189&PID_8840"
+        v1["binds"]["a"] = "ctrl+c"
+        path.write_text(json.dumps(v1), encoding="utf-8")
+        root = store.load_root(path, import_legacy=False)
+        self.assertEqual(list(root["profiles"]), ["Default"])
+        self.assertEqual(store.active_profile(root)["binds"], {"a": "ctrl+c"})
+        self.assertFalse(root["app"]["start_minimized"])
+
     def test_save_load_and_console_compat(self):
-        doc = store.new_document()
+        root = store.load_root(self.dir / "profile.json", import_legacy=False)
+        doc = store.active_profile(root)
         doc["device"]["match"] = "VID_1189&PID_8840"
         store.set_bind(doc, "a", "ctrl+shift+m")
         store.place_key(doc, "a")
         enc = store.add_encoder(doc, "1", "2", "3")
         store.set_bind(doc, "1", {"hotkey": "volume_down", "repeat": True})
+        store.create_profile(root, "Gaming", doc, copy_binds=False)
+        store.set_bind(root["profiles"]["Gaming"], "a", "f13")
         path = self.dir / "profile.json"
-        store.save_document(doc, path)
-        self.assertEqual(store.load_document(path, None), doc)
-        # консольная версия читает тот же файл
-        profile = load_profile(path)
-        self.assertEqual(set(profile.binds), {"a", "1"})
+        store.save_root(root, path)
+        self.assertEqual(store.load_root(path), root)
+        # консольная версия читает тот же файл: активный профиль или указанный
+        self.assertEqual(set(load_profile(path).binds), {"a", "1"})
+        self.assertEqual(set(load_profile(path, "Gaming").binds), {"a"})
+        with self.assertRaises(ConfigError):
+            load_profile(path, "Нет такого")
         self.assertEqual(store.find_encoder(doc, "2"), (enc, "right"))
-        self.assertIn("Крутилка", json.loads(path.read_text(encoding="utf-8"))["layout"]["encoders"][0]["name"])
+        self.assertIn("Крутилка", json.loads(path.read_text(encoding="utf-8"))
+                      ["profiles"]["Default"]["layout"]["encoders"][0]["name"])
+
+    def test_profiles_crud(self):
+        root = store.new_root()
+        base = store.active_profile(root)
+        base["device"]["match"] = "VID_1189&PID_8840"
+        base["binds"]["a"] = "ctrl+c"
+        store.place_key(base, "a")
+
+        name = store.create_profile(root, "Gaming", base, copy_binds=False)
+        gaming = root["profiles"][name]
+        self.assertEqual(gaming["device"], base["device"])        # устройство и раскладка
+        self.assertEqual(gaming["layout"], base["layout"])
+        self.assertEqual(gaming["binds"], {})                     # бинды пустые
+        gaming["layout"]["keys"]["a"]["x"] = 500                  # копия, а не ссылка
+        self.assertNotEqual(base["layout"]["keys"]["a"]["x"], 500)
+
+        copy_name = store.create_profile(root, store.unique_name(root, "Default"), base, copy_binds=True)
+        self.assertEqual(copy_name, "Default 2")
+        self.assertEqual(root["profiles"][copy_name]["binds"], {"a": "ctrl+c"})
+
+        with self.assertRaises(ValueError):
+            store.create_profile(root, "Gaming")                  # имя занято
+        with self.assertRaises(ValueError):
+            store.create_profile(root, "   ")
+
+        store.set_active(root, "Gaming")
+        store.rename_profile(root, "Gaming", "Игры")
+        self.assertEqual(root["active"], "Игры")
+        self.assertEqual(list(root["profiles"]), ["Default", "Игры", "Default 2"])  # порядок сохранён
+
+        store.delete_profile(root, "Игры")
+        self.assertEqual(root["active"], "Default")
+        store.delete_profile(root, "Default 2")
+        with self.assertRaises(ValueError):
+            store.delete_profile(root, "Default")                 # последний не удаляется
 
     def test_encoder_takes_keys_from_buttons(self):
         doc = store.new_document()

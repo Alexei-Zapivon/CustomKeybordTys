@@ -126,7 +126,7 @@ class KeyItem(_DraggableItem):
         dark = self._lit
         _draw_text(p, r.adjusted(8, 5, -8, 0), self.title, "#1b1d23" if dark else theme.SUBTLE, 8.5,
                    flags=Qt.AlignLeft | Qt.AlignTop)
-        caption = self.caption or "—"
+        caption = self.caption
         color = "#1b1d23" if dark else (theme.TEXT if self.caption else theme.SUBTLE)
         _draw_text(p, r.adjusted(5, 18, -5, -5), caption, color, 10, bold=bool(self.caption),
                    min_size=6.5)
@@ -200,10 +200,10 @@ class EncoderItem(_DraggableItem):
                        arrow, dark if lit else theme.SUBTLE, 15)
             cap_rect = QRectF(x0 + (14 if part == "left" else 4), inner.bottom() - 6,
                               half_w - 18, circle.bottom() - inner.bottom() - 14)
-            _draw_text(p, cap_rect, self.captions.get(part) or "—", dark if lit else theme.TEXT,
+            _draw_text(p, cap_rect, self.captions.get(part) or "", dark if lit else theme.TEXT,
                        8.5, bold=True, min_size=6)
         press = self.captions.get("press") if self.keys.get("press") else "нет"
-        _draw_text(p, inner.adjusted(4, 4, -4, -4), press or "—",
+        _draw_text(p, inner.adjusted(4, 4, -4, -4), press or "",
                    "#1b1d23" if self._lit == "press" else theme.TEXT, 8, min_size=5.5)
         _draw_text(p, QRectF(0, store.ENCODER_SIZE + 2, store.ENCODER_SIZE, 20), self.name,
                    theme.SUBTLE, 9)
@@ -328,6 +328,6 @@ class Board(QGraphicsView):
             return
         painter.resetTransform()
         _draw_text(painter, QRectF(self.viewport().rect()),
-                   "Поле пустое.\n\nНажмите «＋ Кнопка» и нажимайте кнопки на мини-клавиатуре —\n"
-                   "они появятся здесь. Потом перетащите их, как они расположены на устройстве.",
+                   "Поле пустое.\n\nНажмите «＋ Кнопка» и нажимайте кнопки на мини-клавиатуре:\n"
+                   "они появятся здесь. Потом перетащите их так, как они расположены на устройстве.",
                    theme.SUBTLE, 11)

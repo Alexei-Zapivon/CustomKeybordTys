@@ -1,16 +1,28 @@
-"""Профиль GUI: profile.json = устройство + бинды + расположение кнопок на экране.
+"""profile.json: профили (устройство + бинды + расположение кнопок) и настройки программы.
 
-Формат совместим с консольной версией: `python -m minikeys run -c profile.json`.
+Формат (версия 2):
 {
-  "device":   {"match": "VID_1189&PID_8840"},
-  "settings": {"unmapped": "block", "log_keys": false},
-  "binds":    {"a": "ctrl+shift+m", "1": {"hotkey": "volume_down", "repeat": true}},
-  "layout": {
-    "keys":     {"a": {"x": 0, "y": 0, "label": "K1"}},
-    "encoders": [{"id": "enc1", "name": "Крутилка 1", "left": "1", "right": "2",
-                  "press": "3", "x": 0, "y": 200}]
+  "version": 2,
+  "active": "Default",                         # профиль, который работает сейчас
+  "app": {"start_minimized": false},           # настройки самой программы
+  "profiles": {
+    "Default": {
+      "device":   {"match": "VID_1189&PID_8840"},          # + "device_number": 4 — только это устройство
+      "settings": {"unmapped": "block", "log_keys": false},
+      "binds":    {"a": "ctrl+shift+m", "1": {"hotkey": "volume_down", "repeat": true}},
+      "layout": {
+        "keys":     {"a": {"x": 0, "y": 0, "label": "K1"}},
+        "encoders": [{"id": "enc1", "name": "Крутилка 1", "left": "1", "right": "2",
+                      "press": "3", "x": 0, "y": 200}]
+      }
+    },
+    "Gaming": {...}
   }
 }
+Файл версии 1 (один профиль прямо в корне) при загрузке становится профилем "Default".
+Консольная версия читает активный профиль: `python -m minikeys run -c profile.json`.
+
+Функции ниже без слова root работают с ОДНИМ профилем (dict из "profiles").
 """
 
 from __future__ import annotations
@@ -23,11 +35,10 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from . import paths
 from .config import ConfigError, Profile, parse_profile
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_PATH = ROOT / "profile.json"
-LEGACY_TOML = ROOT / "config.toml"
+DEFAULT_PROFILE = "Default"
 
 KEY_SIZE = 84      # размер кнопки на поле
 GRID_STEP = 96     # шаг автоматической раскладки
@@ -60,33 +71,131 @@ def normalize(doc: dict) -> dict:
     return base
 
 
-def load_document(path: Path = DEFAULT_PATH, legacy: Path | None = LEGACY_TOML) -> dict:
-    """Читает profile.json; при первом запуске переносит бинды из config.toml."""
-    if path.exists():
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"{path}: не удалось прочитать: {exc}") from None
-        return normalize(doc if isinstance(doc, dict) else {})
+def default_path() -> Path:
+    return paths.data_dir() / "profile.json"
+
+
+def legacy_toml() -> Path:
+    return paths.app_dir() / "config.toml"
+
+
+def _import_toml(legacy: Path | None) -> dict:
+    """Профиль из старого config.toml (первый запуск GUI) или пустой."""
     doc = new_document()
-    if legacy is not None and legacy.exists():
-        try:
-            with legacy.open("rb") as f:
-                old = tomllib.load(f)
-            parse_profile(old)  # переносим только корректный конфиг
-        except (OSError, tomllib.TOMLDecodeError, ConfigError):
-            return doc
-        doc = normalize(old)
-        for key in doc["binds"]:
-            place_key(doc, key)
+    if legacy is None or not legacy.exists():
+        return doc
+    try:
+        with legacy.open("rb") as f:
+            old = tomllib.load(f)
+        parse_profile(old)  # переносим только корректный конфиг
+    except (OSError, tomllib.TOMLDecodeError, ConfigError):
+        return doc
+    doc = normalize(old)
+    for key in doc["binds"]:
+        place_key(doc, key)
     return doc
 
 
-def save_document(doc: dict, path: Path = DEFAULT_PATH) -> None:
+# --- корневой документ: несколько профилей + настройки программы ------------------
+def new_root(profile: dict | None = None) -> dict:
+    return {"version": 2, "active": DEFAULT_PROFILE, "app": {"start_minimized": False},
+            "profiles": {DEFAULT_PROFILE: profile or new_document()}}
+
+
+def normalize_root(data: dict) -> dict:
+    raw = data.get("profiles")
+    if not isinstance(raw, dict) or not raw:
+        return new_root(normalize(data))  # файл версии 1: один профиль в корне
+    profiles = {str(name): normalize(p if isinstance(p, dict) else {}) for name, p in raw.items()}
+    active = data.get("active") if data.get("active") in profiles else next(iter(profiles))
+    app = data.get("app") if isinstance(data.get("app"), dict) else {}
+    return {"version": 2, "active": active,
+            "app": {"start_minimized": bool(app.get("start_minimized", False))},
+            "profiles": profiles}
+
+
+def load_root(path: Path | None = None, legacy: Path | None = None, *,
+              import_legacy: bool = True) -> dict:
+    """Читает profile.json; при первом запуске переносит бинды из config.toml."""
+    path = path or default_path()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"{path}: не удалось прочитать: {exc}") from None
+        return normalize_root(data if isinstance(data, dict) else {})
+    if import_legacy and legacy is None:
+        legacy = legacy_toml()
+    return new_root(_import_toml(legacy if import_legacy else None))
+
+
+def save_root(root: dict, path: Path | None = None) -> None:
     """Атомарная запись: сбой посреди сохранения не испортит файл."""
+    path = path or default_path()
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(root, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def active_profile(root: dict) -> dict:
+    return root["profiles"][root["active"]]
+
+
+def unique_name(root: dict, base: str) -> str:
+    name, n = base, 2
+    while name in root["profiles"]:
+        name, n = f"{base} {n}", n + 1
+    return name
+
+
+def _check_name(root: dict, name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("Имя профиля не может быть пустым")
+    if name in root["profiles"]:
+        raise ValueError(f"Профиль «{name}» уже есть")
+    return name
+
+
+def create_profile(root: dict, name: str, template: dict | None = None,
+                   copy_binds: bool = False) -> str:
+    """Новый профиль. От template берутся устройство и раскладка кнопок (и бинды, если copy_binds)."""
+    name = _check_name(root, name)
+    doc = new_document()
+    if template is not None:
+        doc["device"] = copy.deepcopy(template["device"])
+        doc["settings"] = copy.deepcopy(template["settings"])
+        doc["layout"] = copy.deepcopy(template["layout"])
+        if copy_binds:
+            doc["binds"] = copy.deepcopy(template["binds"])
+    root["profiles"][name] = doc
+    return name
+
+
+def rename_profile(root: dict, old: str, new: str) -> str:
+    if new.strip() == old:
+        return old
+    new = _check_name(root, new)
+    # сохраняем порядок профилей в списке
+    root["profiles"] = {(new if k == old else k): v for k, v in root["profiles"].items()}
+    if root["active"] == old:
+        root["active"] = new
+    return new
+
+
+def delete_profile(root: dict, name: str) -> None:
+    if len(root["profiles"]) <= 1:
+        raise ValueError("Нельзя удалить единственный профиль")
+    del root["profiles"][name]
+    if root["active"] == name:
+        root["active"] = next(iter(root["profiles"]))
+
+
+def set_active(root: dict, name: str) -> dict:
+    if name not in root["profiles"]:
+        raise KeyError(name)
+    root["active"] = name
+    return root["profiles"][name]
 
 
 def device_configured(doc: dict) -> bool:

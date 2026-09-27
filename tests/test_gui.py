@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QEvent, Qt
-    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtGui import QAction, QKeyEvent
     from PySide6.QtWidgets import QApplication
 except ImportError:  # PySide6 не установлен — GUI-тесты пропускаются
     QApplication = None
@@ -41,10 +41,11 @@ class GuiTest(unittest.TestCase):
         self.bridge = ServiceBridge()
         self.service = RemapService(self.bridge, interception_factory=lambda dll: self.ic,
                                     output_factory=FakeOutput)
-        self.doc = store.load_document(self.path, Path(__file__).parent.parent / "config.toml")
+        self.root = store.load_root(self.path, Path(__file__).parent.parent / "config.toml")
+        self.doc = store.active_profile(self.root)
         self.service.set_profile(store.build_profile(self.doc))
         self.service.start()
-        self.win = MainWindow(self.service, self.bridge, self.doc, self.path)
+        self.win = MainWindow(self.service, self.bridge, self.root, self.path)
         self.win.resize(1000, 640)
         self.win.show()
         self.pump()
@@ -80,7 +81,8 @@ class GuiTest(unittest.TestCase):
         self.ic.pending.append((MINI, 0x1E, 0))            # физическая «a»
         self.pump()
         self.assertIn("a", self.doc["layout"]["keys"])
-        self.assertIn("a", store.load_document(self.path, None)["layout"]["keys"])
+        saved = store.active_profile(store.load_root(self.path, import_legacy=False))
+        self.assertIn("a", saved["layout"]["keys"])
         self.assertEqual(self.ic.sent, [])                  # не ушла в систему
         self.shot(self.win, "learn.png")
         self.win.act_learn.setChecked(False)
@@ -138,7 +140,7 @@ class GuiTest(unittest.TestCase):
 
     def test_device_dialog_probe(self):
         from minikeys.gui.dialogs import DeviceDialog
-        dlg = DeviceDialog(self.service, self.bridge, "VID_1189&PID_8840", self.win)
+        dlg = DeviceDialog(self.service, self.bridge, {"match": "VID_1189&PID_8840"}, self.win)
         self.assertEqual(dlg.list.count(), 2)
         self.assertIn("выбрана сейчас", dlg.list.currentItem().text())
         dlg.detect.setChecked(True)
@@ -152,6 +154,73 @@ class GuiTest(unittest.TestCase):
         dlg.reject()
         self.pump()
         self.assertEqual(self.ic.captured, {MINI})
+
+    def test_title_and_no_long_dashes(self):
+        from PySide6.QtWidgets import QAbstractButton, QLabel
+        self.assertEqual(self.win.windowTitle(), "minikeys")
+        texts = [w.text() for w in self.win.findChildren(QLabel) + self.win.findChildren(QAbstractButton)]
+        texts += [a.text() for a in self.win.findChildren(QAction)]
+        texts += [a.text() for a in self.win.tray.contextMenu().actions()]
+        texts.append(self.win.banner.text())
+        self.win.act_learn.setChecked(True)
+        self.pump()
+        texts.append(self.win.banner.text())
+        self.win.act_learn.setChecked(False)
+        bad = [t for t in texts if "—" in t or "–" in t]
+        self.assertEqual(bad, [])
+
+    def test_profiles_switch_on_the_fly(self):
+        self.assertEqual(self.win.profiles.list.count(), 1)
+        self.win._create("Gaming", copy_binds=False)          # как кнопка «＋ Новый профиль»
+        self.pump()
+        self.assertEqual(self.root["active"], "Gaming")
+        self.assertEqual(self.win.profiles.current_name(), "Gaming")
+        self.assertEqual(self.service._profile.binds, {})     # бинды нового профиля пустые
+        self.assertEqual(len(self.win.board._keys), 18)       # раскладка скопирована
+        self.shot(self.win, "profiles.png")
+        # физическая «a» в пустом профиле ничего не делает, но и не печатается
+        self.ic.pending.append((MINI, 0x1E, 0))
+        self.pump()
+        self.assertEqual(self.ic.sent, [])
+        # обратно на Default: бинды вернулись
+        self.win.profiles.list.setCurrentRow(0)
+        self.pump()
+        self.assertEqual(self.root["active"], "Default")
+        self.assertIn("a", self.service._profile.binds)
+        tray_names = [a.text() for a in self.win.tray_profiles.actions()]
+        self.assertEqual(tray_names, ["Default", "Gaming"])
+        # сохранено в файл в формате v2
+        saved = store.load_root(self.path, import_legacy=False)
+        self.assertEqual(list(saved["profiles"]), ["Default", "Gaming"])
+        self.assertEqual(saved["active"], "Default")
+
+    def test_delete_active_profile(self):
+        from PySide6.QtWidgets import QMessageBox
+        self.win._create("Gaming", copy_binds=True)
+        orig = QMessageBox.question
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        try:
+            self.win.delete_profile("Gaming")
+        finally:
+            QMessageBox.question = orig
+        self.assertEqual(list(self.root["profiles"]), ["Default"])
+        self.assertEqual(self.root["active"], "Default")
+        self.assertIs(self.win.doc, self.root["profiles"]["Default"])
+
+    def test_start_minimized_setting(self):
+        self.win.act_start_min.setChecked(True)
+        self.assertTrue(store.load_root(self.path, import_legacy=False)["app"]["start_minimized"])
+
+    def test_device_dialog_two_identical(self):
+        from minikeys.gui.dialogs import DeviceDialog
+        self.ic.devices_now[5] = self.ic.devices_now[MINI]
+        dlg = DeviceDialog(self.service, self.bridge, {"match": "VID_1189&PID_8840"}, self.win)
+        self.assertEqual(dlg.list.count(), 3)
+        self.assertIn("несколько устройств этой модели", dlg.same_hint.text())
+        self.shot(dlg, "device_dialog_two.png")
+        dlg.only_this.setChecked(True)
+        dlg.accept()
+        self.assertEqual(dlg.result_device, {"match": "VID_1189&PID_8840", "device_number": MINI})
 
 
 @unittest.skipIf(QApplication is None, "PySide6 не установлен")
@@ -171,9 +240,10 @@ class MainEntryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "profile.json"
             QTimer.singleShot(700, QApplication.quit)
-            code = gui_app.main(["--profile", str(path)], service_factory=factory)
+            code = gui_app.main(["--config", str(path)], service_factory=factory)
             self.assertEqual(code, 0)
             self.assertTrue(path.exists())            # профиль создан при первом запуске
+            self.assertIn("profiles", store.load_root(path, import_legacy=False))
         self.assertFalse(created[0].running)          # перехватчик остановлен при выходе
         self.assertTrue(ic.closed)
 

@@ -27,20 +27,23 @@ class DeviceMatch:
     """Как найти мини-клавиатуру среди устройств Interception."""
     match: list[str] = field(default_factory=list)   # все подстроки должны входить в Hardware ID
     exclude: list[str] = field(default_factory=list)  # ни одна не должна входить
-    device_number: int | None = None                  # жёсткий номер слота Interception (1..10)
+    # номер устройства в Interception (1..10): вместе с match выбирает ОДНУ из нескольких
+    # одинаковых клавиатур; без match — любое устройство в этом слоте
+    device_number: int | None = None
 
     def matches(self, device: int, hardware_ids: list[str]) -> bool:
-        if self.device_number is not None:
-            return device == self.device_number
+        if self.device_number is not None and device != self.device_number:
+            return False
+        if not self.match:
+            return self.device_number is not None
         haystack = "\n".join(hardware_ids).upper()
-        return (bool(self.match)
-                and all(m.upper() in haystack for m in self.match)
+        return (all(m.upper() in haystack for m in self.match)
                 and not any(x.upper() in haystack for x in self.exclude))
 
     def describe(self) -> str:
-        if self.device_number is not None:
-            return f"устройство №{self.device_number}"
         text = " и ".join(repr(m) for m in self.match)
+        if self.device_number is not None:
+            text = f"{text}, только №{self.device_number}" if text else f"устройство №{self.device_number}"
         if self.exclude:
             text += ", кроме " + ", ".join(repr(x) for x in self.exclude)
         return text
@@ -55,7 +58,8 @@ class Profile:
     path: Path | None = None
 
 
-def load_profile(path: str | Path) -> Profile:
+def load_profile(path: str | Path, profile_name: str | None = None) -> Profile:
+    """config.toml или profile.json от GUI (берётся активный профиль или profile_name)."""
     path = Path(path)
     try:
         if path.suffix.lower() == ".json":
@@ -71,6 +75,14 @@ def load_profile(path: str | Path) -> Profile:
         raise ConfigError(f"{path}: синтаксическая ошибка JSON: {exc}") from None
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: ожидается объект с секциями device/settings/binds")
+    if isinstance(data.get("profiles"), dict):  # profile.json версии 2: несколько профилей
+        name = profile_name or data.get("active")
+        if name not in data["profiles"]:
+            names = ", ".join(data["profiles"])
+            raise ConfigError(f"{path}: нет профиля {name!r} (есть: {names})")
+        data = data["profiles"][name]
+    elif profile_name:
+        raise ConfigError(f"{path}: в файле нет профилей, --profile-name не нужен")
     try:
         profile = parse_profile(data)
     except ConfigError as exc:
@@ -95,7 +107,7 @@ def _check_keys(table: dict, allowed: set[str], where: str) -> None:
 
 def parse_device(data: Any) -> DeviceMatch:
     if not isinstance(data, dict):
-        raise ConfigError("нет секции [device] — укажите, как найти мини-клавиатуру")
+        raise ConfigError("нет секции [device]: укажите, как найти мини-клавиатуру")
     _check_keys(data, {"match", "exclude", "device_number"}, "[device]")
     dev = DeviceMatch()
     if "match" in data:
@@ -178,7 +190,7 @@ def _macro_step(step: Any, where: str) -> Action:
     if isinstance(step, str):
         return Hotkey(_chord(step, where))
     if not isinstance(step, dict):
-        raise ConfigError(f"{where}: шаг макроса — строка-сочетание или таблица")
+        raise ConfigError(f"{where}: шаг макроса должен быть строкой-сочетанием или таблицей")
     kind = _single_kind(step, MACRO_STEP_KINDS, where)
     _check_keys(step, {kind} | _OPTION_KEYS, where)
     return _simple_action(kind, step, where)
@@ -199,7 +211,7 @@ def parse_binding(spec: Any, where: str) -> Binding:
     if kind == "remap":
         chord = _chord(spec["remap"], f"{where}.remap")
         if repeat:
-            raise ConfigError(f"{where}: repeat не нужен для remap — автоповтор передаётся сам")
+            raise ConfigError(f"{where}: repeat не нужен для remap, автоповтор передаётся сам")
         return Binding(KeyDown(chord), KeyUp(chord), source=where)
     if kind == "macro":
         steps = spec["macro"]

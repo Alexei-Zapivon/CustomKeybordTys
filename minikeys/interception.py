@@ -60,18 +60,20 @@ class InterceptionError(RuntimeError):
 
 def find_dll(explicit: str | os.PathLike | None = None) -> str:
     """Ищет interception.dll нужной разрядности."""
+    from .paths import app_dir, bundle_dir
     arch = "x64" if struct.calcsize("P") == 8 else "x86"
-    root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit))
     if os.environ.get("INTERCEPTION_DLL"):
         candidates.append(Path(os.environ["INTERCEPTION_DLL"]))
-    candidates += [
-        root / "lib" / arch / "interception.dll",
-        root / "lib" / "interception.dll",
-        root / "interception.dll",
-    ]
+    # bundle_dir — dll, упакованная внутрь minikeys.exe; app_dir — папка проекта или exe
+    for root in dict.fromkeys((bundle_dir(), app_dir())):
+        candidates += [
+            root / "lib" / arch / "interception.dll",
+            root / "lib" / "interception.dll",
+            root / "interception.dll",
+        ]
     for path in candidates:
         if path.is_file():
             return str(path)

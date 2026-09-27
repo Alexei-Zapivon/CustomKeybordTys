@@ -93,7 +93,7 @@ class RemapService:
         self._targets: dict[int, list[str]] = {}
         self._applied: frozenset[int] = frozenset()
         self._next_scan = 0.0
-        self._pressed: set[str] = set()   # для отсева автоповтора в уведомлениях
+        self._pressed: set[tuple[int, str]] = set()   # для отсева автоповтора в уведомлениях
 
     # --- управление (можно вызывать из любого потока) ---------------------------
     def start(self) -> None:
@@ -196,11 +196,11 @@ class RemapService:
         code, state = stroke.key.code, stroke.key.state
         name = name_from_stroke(code, state)
         is_down = not state & KEY_UP
-        first_down = is_down and name not in self._pressed
+        first_down = is_down and (dev, name) not in self._pressed
         if is_down:
-            self._pressed.add(name)
+            self._pressed.add((dev, name))
         else:
-            self._pressed.discard(name)
+            self._pressed.discard((dev, name))
         notable = first_down and name not in IGNORED_INPUT
 
         if self._mode is Mode.PROBE:
@@ -227,7 +227,7 @@ class RemapService:
             if not targets:
                 self._engine.release_all()
                 if self._profile is not EMPTY_PROFILE:
-                    log.warning("мини-клавиатура не найдена — жду подключения")
+                    log.warning("мини-клавиатура не найдена, жду подключения")
             self._listener.on_targets(dict(targets))
         self._targets = targets
         self._router.targets = frozenset(targets)
