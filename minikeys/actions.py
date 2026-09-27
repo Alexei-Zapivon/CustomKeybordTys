@@ -12,6 +12,7 @@ from typing import Protocol, Sequence
 
 
 class Output(Protocol):
+    def app_command(self, name: str) -> None: ...
     def key_down(self, key: str) -> None: ...
     def key_up(self, key: str) -> None: ...
     def chord(self, keys: Sequence[str]) -> None: ...
@@ -114,6 +115,25 @@ class Click(Action):
 
     def describe(self) -> str:
         return f"клик {self.button}"
+
+
+APP_COMMANDS = {"toggle_window": "показать / скрыть окно minikeys"}
+
+
+@dataclass
+class AppCommand(Action):
+    """Команда самой программе (НОВОЕ 1.3), например показать/скрыть окно.
+
+    Выполняется в потоке действий; Output передаёт её слушателю сервиса, а GUI
+    получает её Qt-сигналом (см. ServiceBridge.app_command).
+    """
+    command: str
+
+    def run(self, out: Output) -> None:
+        out.app_command(self.command)
+
+    def describe(self) -> str:
+        return APP_COMMANDS.get(self.command, self.command)
 
 
 @dataclass

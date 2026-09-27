@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from . import keys
-from .actions import (Action, Binding, Click, Delay, Hotkey, KeyDown, KeyUp, Launch, Macro, Shell,
+from .actions import (APP_COMMANDS, Action, AppCommand, Binding, Click, Delay, Hotkey, KeyDown, KeyUp, Launch, Macro, Shell,
                       Text)
 
 MOUSE_BUTTONS = ("left", "right", "middle")
-ACTION_KINDS = ("hotkey", "text", "run", "cmd", "remap", "macro", "click")
+ACTION_KINDS = ("hotkey", "text", "run", "cmd", "remap", "macro", "click", "app")
 MACRO_STEP_KINDS = ("hotkey", "text", "run", "cmd", "click", "delay", "down", "up")
 
 
@@ -170,6 +170,10 @@ def _simple_action(kind: str, spec: dict, where: str) -> Action:
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(f"{where}.cmd: ожидается команда")
         return Shell(value, _opt_str(spec, "cwd", where))
+    if kind == "app":
+        if value not in APP_COMMANDS:
+            raise ConfigError(f"{where}.app: одно из {list(APP_COMMANDS)}")
+        return AppCommand(value)
     if kind == "click":
         if value not in MOUSE_BUTTONS:
             raise ConfigError(f"{where}.click: одно из {list(MOUSE_BUTTONS)}")

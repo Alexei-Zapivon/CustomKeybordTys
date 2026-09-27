@@ -15,7 +15,7 @@ try:
 except ImportError:  # PySide6 не установлен — GUI-тесты пропускаются
     QApplication = None
 
-from minikeys import store
+from minikeys import keys, store
 from minikeys.service import Mode, RemapService
 
 from .test_service import MAIN, MINI, FakeInterception, FakeOutput
@@ -139,6 +139,31 @@ class GuiTest(unittest.TestCase):
         dlg.editor.kind.setCurrentIndex(dlg.editor.kind.findData("freekey"))
         self.assertEqual(dlg.editor.free_key.currentData(), "f14")
         self.shot(dlg, "discord_preset.png")
+
+    def test_toggle_window_from_mini_keyboard(self):
+        from minikeys.gui.dialogs import ActionEditor
+        ed = ActionEditor()
+        ed.kind.setCurrentIndex(ed.kind.findData("app"))
+        self.assertEqual(ed.spec(), {"app": "toggle_window"})
+        ed.set_spec({"app": "toggle_window"})
+        self.assertEqual(ed.kind.currentData(), "app")
+
+        # бинд на физической кнопке «a»; окно спрятано в трей
+        store.set_bind(self.doc, "a", {"app": "toggle_window"})
+        self.win.save()
+        self.win.board.refresh_texts()
+        self.assertEqual(self.win.board._keys["a"].caption, "⧉ Окно minikeys")
+        self.win.hide()
+        self.pump()
+        self.ic.pending.append((MINI, 0x1E, 0))            # нажатие → поток сервиса → поток действий
+        self.pump(0.6)                                      # → Qt-сигнал → GUI-поток
+        self.assertTrue(self.win.isVisible())
+        self.assertEqual(self.ic.sent, [])
+        # окно открыто и активно: повторное нажатие прячет его в трей
+        self.win.isActiveWindow = lambda: True
+        self.ic.pending += [(MINI, 0x1E, keys.KEY_UP), (MINI, 0x1E, 0)]
+        self.pump(0.6)
+        self.assertFalse(self.win.isVisible())
 
     def test_output_settings_menu(self):
         self.win._set_app("press_ms", 50)

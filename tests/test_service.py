@@ -57,6 +57,15 @@ class FakeInterception:
 class FakeOutput:
     def __init__(self):
         self.calls = []
+        self._app_handler = None
+
+    def set_app_handler(self, handler):
+        self._app_handler = handler
+
+    def app_command(self, name):
+        self.calls.append(("app", name))
+        if self._app_handler:
+            self._app_handler(name)
 
     def chord(self, keys_):
         self.calls.append(("chord", list(keys_)))
@@ -187,6 +196,28 @@ class ServiceTest(unittest.TestCase):
         self.svc.set_mode(Mode.LEARN)
         self.run_ticks()
         self.assertEqual(self.actions(), [("down", "lctrl"), ("up", "lctrl")])
+
+
+class AppCommandTest(unittest.TestCase):
+    def test_toggle_window_reaches_listener(self):
+        from minikeys.winput import WinOutput
+        ic = FakeInterception()
+        calls = []
+        listener = RecordingListener()
+        listener.on_app_command = calls.append
+        svc = RemapService(listener, interception_factory=lambda dll: ic, output_factory=WinOutput)
+        svc._open()
+        try:
+            svc.set_profile(parse_profile({"device": {"match": "VID_1189&PID_8840"},
+                                           "binds": {"a": {"app": "toggle_window"}}}))
+            svc.tick()
+            ic.pending.append((MINI, 0x1E, 0))
+            svc.tick()
+            svc._worker.stop()           # дождаться потока действий
+        finally:
+            svc._shutdown()
+        self.assertEqual(calls, ["toggle_window"])
+        self.assertEqual(ic.sent, [])    # «a» не напечаталась
 
 
 class DriverOutputTest(unittest.TestCase):

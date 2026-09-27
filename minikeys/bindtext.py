@@ -122,6 +122,8 @@ def label(spec: Any) -> str:
         return "⇩ " + pretty_chord(spec["remap"])
     if "macro" in spec:
         return f"⚙ Макрос ({len(spec['macro'])})"
+    if "app" in spec:
+        return "⧉ Окно minikeys"
     if "click" in spec:
         return "Клик " + spec["click"]
     return "?"

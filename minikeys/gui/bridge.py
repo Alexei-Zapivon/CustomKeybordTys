@@ -19,6 +19,7 @@ class ServiceBridge(QObject, Listener):
     learned = Signal(str)
     probed = Signal(int, object, str)  # устройство, hardware ids, клавиша
     stopped = Signal(str)              # текст ошибки или ""
+    app_command = Signal(str)          # НОВОЕ 1.3: команда окну, например "toggle_window"
 
     def on_targets(self, targets: dict[int, list[str]]) -> None:
         self.targets_changed.emit(targets)
@@ -31,6 +32,9 @@ class ServiceBridge(QObject, Listener):
 
     def on_probe(self, device: int, hardware_ids: list[str], key: str) -> None:
         self.probed.emit(device, hardware_ids, key)
+
+    def on_app_command(self, name: str) -> None:
+        self.app_command.emit(name)  # вызывается из потока действий, слот сработает в GUI-потоке
 
     def on_stopped(self, error: str | None) -> None:
         self.stopped.emit(error or "")

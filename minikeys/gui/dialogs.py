@@ -114,6 +114,7 @@ ACTION_TYPES = [
     ("macro", "Макрос (последовательность шагов)"),
     ("cmd", "Команда (cmd.exe)"),
     ("remap", "Удержание (работает как другая клавиша)"),
+    ("app", "Показать / скрыть окно minikeys"),
 ]
 
 
@@ -130,7 +131,7 @@ def classify(spec: Any) -> str:
         except keys.KeyNameError:
             return "hotkey"
         return "media" if len(parsed) == 1 and parsed[0] in bindtext.MEDIA_KEYS else "hotkey"
-    for kind in ("run", "text", "macro", "cmd", "remap"):
+    for kind in ("run", "text", "macro", "cmd", "remap", "app"):
         if kind in spec:
             return kind
     return "none"
@@ -242,6 +243,12 @@ class ActionEditor(QWidget):
         lay.addStretch()
         self.pages.addWidget(page)
 
+        # показать / скрыть окно (НОВОЕ 1.3): страница без настроек, только пояснение
+        self.pages.addWidget(_hint(
+            "Кнопка разворачивает окно minikeys из трея и выводит его на передний план. "
+            "Если окно уже открыто и активно, оно прячется обратно в трей.\n\n"
+            "Второй экземпляр программы при этом не запускается."))
+
         # Discord / свободная клавиша F13-F24 (НОВОЕ в 1.2)
         page = QWidget()
         lay = QVBoxLayout(page)
@@ -335,6 +342,8 @@ class ActionEditor(QWidget):
             spec = {"macro": bindtext.text_to_macro(self.macro.toPlainText())}
         elif kind == "cmd":
             spec = {"cmd": self.cmd.text().strip()}
+        elif kind == "app":
+            spec = {"app": "toggle_window"}
         else:
             spec = {"remap": self.remap.text()}
         try:

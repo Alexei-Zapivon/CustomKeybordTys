@@ -104,6 +104,15 @@ class WinOutput:
         self.driver_send = driver_send
         self._user32 = None
         self._sleep = time.sleep  # подменяется в тестах
+        self._app_handler: Callable[[str], None] | None = None
+
+    def set_app_handler(self, handler: Callable[[str], None] | None) -> None:
+        """Куда отправлять команды программе (AppCommand): слушатель сервиса."""
+        self._app_handler = handler
+
+    def app_command(self, name: str) -> None:
+        if self._app_handler is not None:
+            self._app_handler(name)
 
     def configure(self, *, press_ms: int | None = None, method: str | None = None,
                   driver_send: DriverSend | None = None) -> None:

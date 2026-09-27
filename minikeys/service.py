@@ -70,6 +70,9 @@ class Listener:
     def on_probe(self, device: int, hardware_ids: list[str], key: str) -> None:
         """В режиме PROBE нажата клавиша на любой клавиатуре."""
 
+    def on_app_command(self, name: str) -> None:
+        """Сработал бинд-команда программе (например, "toggle_window"). Из потока действий."""
+
     def on_stopped(self, error: str | None) -> None:
         """Цикл завершился (error — текст ошибки, если упал)."""
 
@@ -114,6 +117,8 @@ class RemapService:
             from .winput import WinOutput
             self._output_factory = WinOutput
         self._out = self._output_factory()
+        if hasattr(self._out, "set_app_handler"):
+            self._out.set_app_handler(self._listener.on_app_command)
         self._worker = Worker(self._out)
         self._engine = Engine(self._profile, self._worker.submit)
         self._router = Router(self._engine)

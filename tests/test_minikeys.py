@@ -119,6 +119,13 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_profile({"device": {}, "binds": {}})
 
+    def test_app_command(self):
+        from minikeys.actions import AppCommand
+        p = profile({"a": {"app": "toggle_window"}})
+        self.assertEqual(p.binds["a"].on_press, AppCommand("toggle_window"))
+        with self.assertRaises(ConfigError):
+            profile({"a": {"app": "format_c"}})
+
     def test_output_settings(self):
         p = parse_profile({"device": {"match": "X"}, "settings": {"press_ms": 50, "output": "driver"}})
         self.assertEqual((p.press_ms, p.output), (50, "driver"))

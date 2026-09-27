@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         bridge.key_event.connect(self._on_key_event)
         bridge.learned.connect(self._on_learned)
         bridge.stopped.connect(self._on_service_stopped)
+        bridge.app_command.connect(self._on_app_command)  # НОВОЕ 1.3
 
         self.board.set_document(self.doc)
         self._refresh_profiles()
@@ -243,6 +244,20 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        _force_foreground(self)
+
+    # --- команды от кнопок мини-клавиатуры (НОВОЕ 1.3) ------------------------------
+    def _on_app_command(self, name: str) -> None:
+        """Слот Qt-сигнала ServiceBridge.app_command: всегда выполняется в GUI-потоке."""
+        if name == "toggle_window":
+            self.toggle_window()
+
+    def toggle_window(self) -> None:
+        """Окно на экране и активно: спрятать в трей. Иначе развернуть и вывести вперёд."""
+        if self.isVisible() and not self.isMinimized() and self.isActiveWindow():
+            self.hide()
+        else:
+            self.show_window()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._quitting or not QSystemTrayIcon.isSystemTrayAvailable():
@@ -598,6 +613,39 @@ class MainWindow(QMainWindow):
     def _flash(self, key: str) -> None:
         if self.board.light_key(key, True):
             QTimer.singleShot(300, lambda: self.board.light_key(key, False))
+
+
+def _force_foreground(window: QWidget) -> None:
+    """Вывести окно на передний план в Windows.
+
+    Windows не даёт фоновому процессу забирать фокус: без этого окно лишь мигнёт на
+    панели задач. Нажатие кнопки мини-клавиатуры до системы не дошло (его забрал
+    перехватчик), поэтому для Windows это «фоновый» запрос. Обходим стандартным
+    приёмом: на время подключаемся к очереди ввода окна, которое сейчас активно.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        for fn in (user32.BringWindowToTop, user32.SetForegroundWindow):
+            fn.argtypes = [ctypes.c_void_p]
+        hwnd = int(window.winId())
+        foreground = user32.GetForegroundWindow()
+        fg_thread = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+        our_thread = kernel32.GetCurrentThreadId()
+        attached = bool(fg_thread and fg_thread != our_thread
+                        and user32.AttachThreadInput(fg_thread, our_thread, True))
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(fg_thread, our_thread, False)
+    except Exception as exc:  # не критично: окно всё равно показано
+        log.debug("не удалось вывести окно вперёд: %s", exc)
 
 
 # --- запуск ------------------------------------------------------------------------
